@@ -1,0 +1,26 @@
+# Build artefacts.
+build/
+tests/build/
+bench/build/
+bench/results/
+
+# Object files anywhere under the binding.
+*.o
+*.a
+
+# Sanitizer / scan-build / coverage output (Phase 8 only).
+scan-build-out/
+*.gcda
+*.gcno
+*.gcov
+coverage/
+*.info
+
+# Editor scratch.
+*.swp
+*~
+.cache/
+compile_commands.json
+
+# Phase-1 verification scratch (deleted before final commit).
+scratch/

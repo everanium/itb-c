@@ -1,0 +1,1118 @@
+# ITB C Binding
+
+C17 wrapper over the libitb shared library (`cmd/cshared`). The binding
+ships one public header (`include/itb.h`) plus a static archive
+(`build/libitb_c.a`); consumer applications compile against the header
+and link `-litb_c -litb` so the dynamic loader resolves the underlying
+`ITB_*` exports against `libitb.so` at process start. No `dlopen`, no
+runtime FFI shim — every `ITB_*` symbol is bound at link time.
+
+**Path placeholder.** `<itb>` denotes the path to the local ITB
+repository checkout (or this binding's mirror clone) — for example,
+`/home/you/go/src/itb` or `~/projects/itb-c`. Substitute the literal
+token in the recipes below; shell does not expand it.
+
+## Prerequisites (Arch Linux)
+
+```bash
+sudo pacman -S go go-tools gcc clang make pkgconf check
+```
+
+`gcc` is the reference compiler; `clang` is exercised by the same
+Makefile (`CC=clang make`). `pkgconf` resolves `pkg-config --cflags
+check` for the test runner. `check` is the unit-testing framework used
+by `tests/test_*.c` — only required for `make tests` / `./run_tests.sh`,
+not for consumer applications that link `-litb_c`.
+
+## Build the shared library
+
+The convenience driver `bindings/c/build.sh` builds `libitb.so` plus
+the C binding's static archive in one step. Run it from anywhere:
+
+```bash
+./bindings/c/build.sh
+```
+
+For hosts without AVX-512+VL CPUs, opt out of the 4-lane batched
+chain-absorb wrapper:
+
+```bash
+./bindings/c/build.sh --noitbasm
+```
+
+The driver expands to two underlying steps — building libitb from the
+repo root, then `make` on the binding side. Equivalent manual
+invocation:
+
+```bash
+go build -trimpath -buildmode=c-shared \
+    -o dist/linux-amd64/libitb.so ./cmd/cshared
+cd bindings/c && make
+```
+
+(macOS produces `libitb.dylib` under `dist/darwin-<arch>/`,
+Windows produces `libitb.dll` under `dist/windows-<arch>/`.)
+
+### Build tags governing hash-kernel selection
+
+| Build flag | ITB chain-absorb asm | Upstream hash asm | Use case |
+|---|---|---|---|
+| (none) | engaged | engaged | Default — full asm stack |
+| <code>‑tags=noitbasm</code> | off | engaged | Hosts without AVX-512+VL where the 4-lane chain-absorb wrapper is dead weight; the encrypt path falls into `process_cgo`'s nil-`BatchHash` branch and drives 4 single-call invocations through the upstream asm directly |
+
+Passing `-tags=noitbasm` does not disable upstream asm in
+`zeebo/blake3`, `golang.org/x/crypto`, or `jedisct1/go-aes`. The same
+`libitb.so` is consumed by every binding; the flag governs only the
+shared library, not the binding language.
+
+### Compiler selection
+
+Both `gcc` and `clang` are exercised by the binding's CI matrix; both
+accept the source unchanged at `-std=c17 -Wall -Wextra -Wpedantic`:
+
+```bash
+CC=gcc   make           # reference compiler
+CC=clang make           # LLVM-backed compiler
+```
+
+The Makefile ships with extra-strict warning flags
+(`-Wshadow -Wconversion -Wsign-conversion -Wstrict-prototypes
+-Wmissing-prototypes`) on top of the standard `-Wall -Wextra
+-Wpedantic` baseline. The full library + tests + bench harness build
+clean under both compilers at this flag set.
+
+## Add to a C / C++ project
+
+Compile against the public header and link the static archive plus the
+underlying `libitb.so`:
+
+```bash
+cc -std=c17 -I/path/to/bindings/c/include myapp.c \
+    -L/path/to/bindings/c/build -litb_c \
+    -L/path/to/dist/linux-amd64 -Wl,-rpath,/path/to/dist/linux-amd64 \
+    -litb
+```
+
+The header is C++-aware (`extern "C"` block guarded by
+`__cplusplus`), so the same archive serves C and C++ consumers without
+a separate wrapper.
+
+## Run the integration test suite
+
+```bash
+./bindings/c/run_tests.sh
+```
+
+The harness compiles every `tests/test_*.c` to its own standalone
+executable under `tests/build/` and runs each in turn. Per-process
+isolation gives every test a fresh libitb global state without needing
+an in-process serial lock. The 30 test files mirror the cross-binding
+coverage: Single + Triple Ouroboros, mixed primitives, authenticated
+paths, blob round-trip, streaming chunked I/O, error paths, lockSeed
+lifecycle, persistence, per-instance configuration overrides.
+
+Override the compiler via the `CC` environment variable:
+
+```bash
+CC=clang ./bindings/c/run_tests.sh
+```
+
+## Library lookup order
+
+1. `LD_LIBRARY_PATH` resolved at process startup. The test runner
+   inherits the embedded RPATH and does not export it.
+2. The `rpath` baked into the produced binary at link time
+   (`-Wl,-rpath,../../dist/linux-amd64`). Installed binaries find
+   `libitb` without `LD_LIBRARY_PATH`.
+3. System loader path (`ld.so.cache`, `DYLD_LIBRARY_PATH`, `PATH`).
+
+## Streaming AEAD
+
+**Streaming AEAD** authenticates a chunked stream end-to-end while
+preserving the deniability of the per-chunk MAC-Inside-Encrypt
+container. Each chunk's MAC binds the encrypted payload to a 32-byte
+CSPRNG stream anchor (written as a once-per-stream wire prefix), the
+cumulative pixel offset of preceding chunks, and a final-flag bit —
+defending against chunk reorder, replay within or across streams
+sharing the PRF / MAC key, silent mid-stream drop, and truncate-tail.
+The wire format adds 32 bytes of stream prefix plus one byte of
+encrypted trailing flag per chunk; no externally visible MAC tag.
+
+**Easy Mode:**
+
+`itb_encryptor_stream_encrypt_auth` consumes plaintext via a `read_fn`
+callback and emits the on-wire transcript via a `write_fn` callback.
+Both callbacks receive an opaque `user_ctx` pointer that the binding
+does not interpret — the example wires it to a `FILE *` opened via
+`fopen`, and the callbacks perform `fread` / `fwrite` against the
+file. The MAC key is allocated CSPRNG-fresh inside the encryptor at
+constructor time.
+
+```c
+#include "itb.h"
+#include <stdio.h>
+
+#define CHUNK_SIZE  ((size_t)16 * 1024 * 1024)
+
+static int file_read_fn(void *ctx, void *buf, size_t cap, size_t *out_n) {
+    *out_n = fread(buf, 1, cap, (FILE *) ctx);
+    return 0;
+}
+
+static int file_write_fn(void *ctx, const void *buf, size_t n) {
+    return (fwrite(buf, 1, n, (FILE *) ctx) == n) ? 0 : -1;
+}
+
+itb_encryptor_t *enc = NULL;
+itb_encryptor_new("areion512", 1024, "hmac-blake3", 1, &enc);
+
+FILE *fin  = fopen("/tmp/64mb.src", "rb");
+FILE *fout = fopen("/tmp/64mb.enc", "wb");
+itb_encryptor_stream_encrypt_auth(enc, file_read_fn, fin,
+                                  file_write_fn, fout, CHUNK_SIZE);
+fclose(fin); fclose(fout);
+
+fin  = fopen("/tmp/64mb.enc", "rb");
+fout = fopen("/tmp/64mb.dst", "wb");
+itb_encryptor_stream_decrypt_auth(enc, file_read_fn, fin,
+                                  file_write_fn, fout, CHUNK_SIZE);
+fclose(fin); fclose(fout);
+itb_encryptor_free(enc);
+```
+
+**Build + run:**
+
+```sh
+gcc -O2 -Wall -o main main.c \
+    -I <itb>/bindings/c/include \
+    <itb>/bindings/c/build/libitb_c.a \
+    -L <itb>/dist/linux-amd64 -litb \
+    -Wl,-rpath,<itb>/dist/linux-amd64 \
+    -lpthread -ldl -lm
+./main
+```
+
+**Output (verified):**
+
+```
+Easy Mode src sha256: 7adc82f9bebf205db2a6c8033d7c1fe43d3bf8b3ecb0fbfd6c4c2dff71672425
+Easy Mode dst sha256: 7adc82f9bebf205db2a6c8033d7c1fe43d3bf8b3ecb0fbfd6c4c2dff71672425
+[OK] Easy Mode: 64 MiB roundtrip via stream-auth verified
+```
+
+---
+
+**Low-Level Mode:**
+
+Free functions `itb_stream_encrypt_auth` / `itb_stream_decrypt_auth`
+take three `itb_seed_t *` handles plus an `itb_mac_t *` (constructed
+with a 32-byte key from `/dev/urandom`) and stream through the same
+chunked-AEAD construction. The same `read_fn` / `write_fn` callback
+shape applies as in Easy Mode.
+
+```c
+itb_seed_t *noise = NULL, *data = NULL, *start = NULL;
+itb_mac_t  *mac = NULL;
+unsigned char mac_key[32];                 /* fill from /dev/urandom */
+
+itb_seed_new("areion512", 1024, &noise);
+itb_seed_new("areion512", 1024, &data);
+itb_seed_new("areion512", 1024, &start);
+itb_mac_new ("hmac-blake3", mac_key, sizeof mac_key, &mac);
+
+FILE *fin  = fopen("/tmp/64mb.src", "rb");
+FILE *fout = fopen("/tmp/64mb.enc", "wb");
+itb_stream_encrypt_auth(noise, data, start, mac,
+    file_read_fn, fin, file_write_fn, fout, CHUNK_SIZE);
+fclose(fin); fclose(fout);
+
+itb_mac_free(mac);
+itb_seed_free(noise); itb_seed_free(data); itb_seed_free(start);
+```
+
+**Build + run:**
+
+```sh
+gcc -O2 -Wall -o main main.c \
+    -I <itb>/bindings/c/include \
+    <itb>/bindings/c/build/libitb_c.a \
+    -L <itb>/dist/linux-amd64 -litb \
+    -Wl,-rpath,<itb>/dist/linux-amd64 \
+    -lpthread -ldl -lm
+./main
+```
+
+**Output (verified):**
+
+```
+Low-Level src sha256: 7adc82f9bebf205db2a6c8033d7c1fe43d3bf8b3ecb0fbfd6c4c2dff71672425
+Low-Level dst sha256: 7adc82f9bebf205db2a6c8033d7c1fe43d3bf8b3ecb0fbfd6c4c2dff71672425
+[OK] Low-Level Mode: 64 MiB roundtrip via stream-auth verified
+```
+
+Linking pulls in both the static C-binding archive
+(`build/libitb_c.a`, the C wrapper layer that exposes
+`itb_encryptor_*` / `itb_seed_*` / `itb_mac_*` / `itb_*_stream_*` to
+user code) AND the shared Go-built library (`-litb` resolved against
+`dist/<os>-<arch>/libitb.so`, which carries the raw `ITB_*` ABI). An
+rpath embedded into the binary lets it find `libitb.so` at runtime
+without `LD_LIBRARY_PATH`.
+
+## Quick Start — `itb_encryptor_t` + HMAC-BLAKE3 (MAC Authenticated)
+
+The high-level Easy Mode encryptor (mirroring the
+`github.com/everanium/itb/easy` Go sub-package) replaces the seven-line
+setup ceremony of the lower-level seed / `itb_encrypt` / `itb_decrypt`
+path with one constructor call: the encryptor allocates its own three
+(Single) or seven (Triple) seeds plus MAC closure, snapshots the global
+configuration into a per-instance Config, and exposes setters that
+mutate only its own state without touching the process-wide
+`itb_set_*` accessors. Two encryptors with different settings can run
+side-by-side without cross-contamination.
+
+The MAC primitive is bound at construction time — the third constructor
+argument selects one of the registry names (`hmac-blake3` —
+recommended default, `hmac-sha256`, `kmac256`). The encryptor allocates
+a fresh 32-byte CSPRNG MAC key alongside the per-seed PRF keys;
+`itb_encryptor_export` carries all of them in a single JSON blob. On
+the receiver side, `itb_encryptor_import(dec, blob, blob_len)` restores
+the MAC key together with the seeds, so the encrypt-today /
+decrypt-tomorrow flow is one method call per side.
+
+When the `mac_name` argument is `NULL` or the empty string `""` the
+binding picks `hmac-blake3` rather than forwarding NULL through to
+libitb's own default — HMAC-BLAKE3 measures the lightest
+authenticated-mode overhead across the Easy Mode bench surface.
+
+```c
+/* Sender */
+
+#include <itb.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Per-instance configuration — mutates only this encryptor's
+ * Config. Two encryptors built side-by-side carry independent
+ * settings; process-wide itb_set_* accessors are NOT consulted
+ * after construction. mode = 1 = Single Ouroboros (3 seeds);
+ * mode = 3 = Triple Ouroboros (7 seeds). */
+itb_encryptor_t *enc = NULL;
+itb_encryptor_new("areion512", 2048, "hmac-blake3", 1, &enc);
+
+itb_encryptor_set_nonce_bits(enc, 512);    /* 512-bit nonce (default: 128-bit) */
+itb_encryptor_set_barrier_fill(enc, 4);    /* CSPRNG fill margin (default: 1, valid: 1, 2, 4, 8, 16, 32) */
+itb_encryptor_set_bit_soup(enc, 1);        /* optional bit-level split ("bit-soup"; default: 0 = byte-level) */
+                                           /* auto-enabled for Single Ouroboros if set_lock_soup(1) is on */
+itb_encryptor_set_lock_soup(enc, 1);       /* optional Insane Interlocked Mode: per-chunk PRF-keyed
+                                            * bit-permutation overlay on top of bit-soup;
+                                            * auto-enabled for Single Ouroboros if set_bit_soup(1) is on */
+
+/* itb_encryptor_set_lock_seed(enc, 1);    optional dedicated lockSeed for the bit-permutation
+                                           derivation channel — separates that PRF's keying
+                                           material from the noiseSeed-driven noise-injection
+                                           channel; auto-couples set_lock_soup(1) +
+                                           set_bit_soup(1). Adds one extra seed slot
+                                           (3 -> 4 for Single, 7 -> 8 for Triple). Must be
+                                           called BEFORE the first encrypt — switching
+                                           mid-session returns ITB_EASY_LOCKSEED_AFTER_ENCRYPT. */
+
+/* Persistence blob — carries seeds + PRF keys + MAC key (and the
+ * dedicated lockSeed material when set_lock_seed(1) is active). */
+uint8_t *blob = NULL;
+size_t   blob_len = 0;
+itb_encryptor_export(enc, &blob, &blob_len);
+printf("state blob: %zu bytes\n", blob_len);
+
+const char *plaintext = "any text or binary data - including 0x00 bytes";
+size_t plaintext_len = strlen(plaintext);
+
+/* Authenticated encrypt — 32-byte tag is computed across the
+ * entire decrypted capacity and embedded inside the RGBWYOPA
+ * container, preserving oracle-free deniability. */
+uint8_t *encrypted = NULL;
+size_t   encrypted_len = 0;
+itb_encryptor_encrypt_auth(enc, plaintext, plaintext_len,
+                           &encrypted, &encrypted_len);
+printf("encrypted: %zu bytes\n", encrypted_len);
+
+/* Streaming alternative — slice plaintext into chunk_size pieces
+ * and call itb_encryptor_encrypt_auth() per chunk; each chunk
+ * carries its own MAC tag. itb_encryptor_header_size() and
+ * itb_encryptor_parse_chunk_len() are per-instance accessors
+ * (track this encryptor's own nonce_bits, NOT the process-wide
+ * itb_header_size). */
+
+/* Send `encrypted` + `blob`; itb_encryptor_close zeroes key
+ * material on the Go side and itb_encryptor_free deallocates the
+ * wrapper. */
+itb_buffer_free(encrypted);
+itb_buffer_free(blob);
+itb_encryptor_close(enc);
+itb_encryptor_free(enc);
+
+
+/* Receiver */
+
+/* Receive encrypted payload + state blob */
+/* uint8_t *encrypted = ...; size_t encrypted_len = ...; */
+/* uint8_t *blob = ...;      size_t blob_len = ...; */
+
+itb_set_max_workers(8);  /* limit to 8 CPU cores (default: 0 = all CPUs) */
+
+/* Optional: peek at the blob's metadata before constructing a
+ * matching encryptor. Useful when the receiver multiplexes blobs
+ * of different shapes (different primitive / mode / MAC choices). */
+char prim_buf[64], mac_buf[64];
+size_t prim_len = 0, mac_len = 0;
+int peek_kb = 0, peek_mode = 0;
+itb_easy_peek_config(blob, blob_len,
+                     prim_buf, sizeof prim_buf, &prim_len,
+                     &peek_kb, &peek_mode,
+                     mac_buf, sizeof mac_buf, &mac_len);
+printf("peek: primitive=%s, key_bits=%d, mode=%d, mac=%s\n",
+       prim_buf, peek_kb, peek_mode, mac_buf);
+
+itb_encryptor_t *dec = NULL;
+itb_encryptor_new(prim_buf, peek_kb, mac_buf, peek_mode, &dec);
+
+/* itb_encryptor_import(dec, blob, blob_len) below automatically
+ * restores the full per-instance configuration (nonce_bits,
+ * barrier_fill, bit_soup, lock_soup, and the dedicated lockSeed
+ * material when sender's set_lock_seed(1) was active). The set_*
+ * lines below are kept for documentation — they show the knobs
+ * available for explicit pre-Import override. barrier_fill is
+ * asymmetric: a receiver-set value > 1 takes priority over the
+ * blob's barrier_fill (the receiver's heavier CSPRNG margin is
+ * preserved across Import). */
+itb_encryptor_set_nonce_bits(dec, 512);
+itb_encryptor_set_barrier_fill(dec, 4);
+itb_encryptor_set_bit_soup(dec, 1);
+itb_encryptor_set_lock_soup(dec, 1);
+/* itb_encryptor_set_lock_seed(dec, 1);   optional — Import below restores
+                                          the dedicated lockSeed slot from
+                                          the blob's lock_seed:true. */
+
+/* Restore PRF keys, seed components, MAC key, and the per-instance
+ * configuration overrides (nonce_bits / barrier_fill / bit_soup /
+ * lock_soup / lock_seed) from the saved blob. */
+itb_encryptor_import(dec, blob, blob_len);
+
+/* Authenticated decrypt — any single-bit tamper triggers MAC
+ * failure (no oracle leak about which byte was tampered). Mismatch
+ * surfaces as ITB_MAC_FAILURE, not a corrupted plaintext. */
+uint8_t *plaintext_out = NULL;
+size_t   plaintext_out_len = 0;
+itb_status_t st = itb_encryptor_decrypt_auth(dec, encrypted, encrypted_len,
+                                             &plaintext_out, &plaintext_out_len);
+if (st == ITB_OK) {
+    printf("decrypted: %.*s\n", (int) plaintext_out_len, (const char *) plaintext_out);
+    itb_buffer_free(plaintext_out);
+} else if (st == ITB_MAC_FAILURE) {
+    printf("MAC verification failed -- tampered or wrong key\n");
+} else {
+    printf("decrypt error: code=%d msg=%s\n", st, itb_last_error());
+}
+
+itb_encryptor_close(dec);
+itb_encryptor_free(dec);
+```
+
+### Output-buffer ownership contract
+
+Each cipher method
+(`itb_encryptor_encrypt` / `itb_encryptor_decrypt` /
+`itb_encryptor_encrypt_auth` / `itb_encryptor_decrypt_auth`) returns a
+**freshly malloc'd user-owned buffer** via `*out_buf` with the visible
+length in `*out_len`. The caller releases the buffer with
+`itb_buffer_free()`. The encryptor's internal cache (the libitb FFI
+write target) is invisible to the caller and lives across calls; what
+reaches the caller is always a fresh copy. The cached bytes are zeroed
+on grow / `itb_encryptor_close` / `itb_encryptor_free`, so residual
+ciphertext / plaintext does not linger in heap memory beyond the next
+cipher call.
+
+## Quick Start — Mixed primitives (Different PRF per seed slot)
+
+`itb_encryptor_new_mixed` and `itb_encryptor_new_mixed3` accept
+per-slot primitive names — the noise / data / start (and optional
+dedicated lockSeed) seed slots can use different PRF primitives within
+the same native hash width. The mix-and-match-PRF freedom of the
+lower-level path, surfaced through the high-level encryptor without
+forcing the caller off the Easy Mode constructor. The state blob
+carries per-slot primitives + per-slot PRF keys; the receiver
+constructs a matching encryptor with the same arguments and calls
+`itb_encryptor_import` to restore.
+
+```c
+/* Sender */
+
+#include <itb.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Per-slot primitive selection (Single Ouroboros, 3 + 1 slots).
+ * Every name must share the same native hash width — mixing widths
+ * surfaces ITB_SEED_WIDTH_MIX at construction time.
+ * Triple Ouroboros mirror — itb_encryptor_new_mixed3 takes seven
+ * per-slot names (noise + 3 data + 3 start) plus the optional
+ * prim_l lockSeed. */
+itb_encryptor_t *enc = NULL;
+itb_encryptor_new_mixed(
+    "blake3",         /* prim_n: noiseSeed:  BLAKE3 */
+    "blake2s",        /* prim_d: dataSeed:   BLAKE2s */
+    "areion256",      /* prim_s: startSeed:  Areion-SoEM-256 */
+    "blake2b256",     /* prim_l: dedicated lockSeed (NULL or "" for no lockSeed slot) */
+    1024,             /* key_bits */
+    "hmac-blake3",    /* mac_name */
+    &enc);
+
+/* Per-instance configuration applies as for itb_encryptor_new. */
+itb_encryptor_set_nonce_bits(enc, 512);
+itb_encryptor_set_barrier_fill(enc, 4);
+/* BitSoup + LockSoup are auto-coupled on the on-direction by
+ * prim_l above; explicit calls below are unnecessary but harmless
+ * if added. */
+/* itb_encryptor_set_bit_soup(enc, 1); */
+/* itb_encryptor_set_lock_soup(enc, 1); */
+
+/* Per-slot introspection — itb_encryptor_primitive returns "mixed"
+ * literal, itb_encryptor_primitive_at(slot) returns each slot's
+ * name, itb_encryptor_is_mixed is the typed predicate. Slot
+ * ordering is canonical: 0 = noiseSeed, 1 = dataSeed, 2 = startSeed,
+ * 3 = lockSeed (Single); Triple grows the middle range to 7 slots
+ * + lockSeed. */
+int is_mixed = 0;
+itb_encryptor_is_mixed(enc, &is_mixed);
+char namebuf[64];
+size_t name_len = 0;
+itb_encryptor_primitive(enc, namebuf, sizeof namebuf, &name_len);
+printf("mixed=%d primitive=%s\n", is_mixed, namebuf);
+for (int i = 0; i < 4; i++) {
+    itb_encryptor_primitive_at(enc, i, namebuf, sizeof namebuf, &name_len);
+    printf("  slot %d: %s\n", i, namebuf);
+}
+
+uint8_t *blob = NULL;
+size_t   blob_len = 0;
+itb_encryptor_export(enc, &blob, &blob_len);
+printf("state blob: %zu bytes\n", blob_len);
+
+const char *plaintext = "mixed-primitive Easy Mode payload";
+uint8_t *encrypted = NULL;
+size_t   encrypted_len = 0;
+itb_encryptor_encrypt_auth(enc, plaintext, strlen(plaintext),
+                           &encrypted, &encrypted_len);
+
+
+/* Receiver */
+
+/* Receive encrypted payload + state blob */
+/* uint8_t *encrypted = ...; size_t encrypted_len = ...; */
+/* uint8_t *blob = ...;      size_t blob_len = ...; */
+
+/* Receiver constructs a matching mixed encryptor — every per-slot
+ * primitive name plus key_bits and mac_name must agree with the
+ * sender. itb_encryptor_import validates each per-slot primitive
+ * against the receiver's bound spec; mismatches surface as
+ * ITB_EASY_MISMATCH with the offending JSON field name retrievable
+ * via itb_easy_last_mismatch_field. */
+itb_encryptor_t *dec = NULL;
+itb_encryptor_new_mixed(
+    "blake3", "blake2s", "areion256", "blake2b256",
+    1024, "hmac-blake3", &dec);
+
+itb_encryptor_import(dec, blob, blob_len);
+
+uint8_t *decrypted = NULL;
+size_t   decrypted_len = 0;
+itb_encryptor_decrypt_auth(dec, encrypted, encrypted_len,
+                           &decrypted, &decrypted_len);
+printf("decrypted: %.*s\n", (int) decrypted_len, (const char *) decrypted);
+```
+
+## Quick Start — Triple Ouroboros
+
+Triple Ouroboros (3× security: P × 2^(3×key_bits)) takes seven seeds
+(one shared `noiseSeed` plus three `dataSeed` and three `startSeed`)
+on the low-level path, all wrapped behind a single `itb_encryptor_new`
+call when `mode = 3` is passed to the constructor.
+
+```c
+#include <itb.h>
+#include <string.h>
+
+/* mode=3 selects Triple Ouroboros. All other constructor arguments
+ * behave identically to the Single (mode=1) case shown above. */
+itb_encryptor_t *enc = NULL;
+itb_encryptor_new("areion512", 2048, "hmac-blake3", 3, &enc);
+
+const char *plaintext = "Triple Ouroboros payload";
+
+uint8_t *encrypted = NULL;
+size_t   encrypted_len = 0;
+itb_encryptor_encrypt_auth(enc, plaintext, strlen(plaintext),
+                           &encrypted, &encrypted_len);
+
+uint8_t *decrypted = NULL;
+size_t   decrypted_len = 0;
+itb_encryptor_decrypt_auth(enc, encrypted, encrypted_len,
+                           &decrypted, &decrypted_len);
+
+itb_buffer_free(encrypted);
+itb_buffer_free(decrypted);
+itb_encryptor_close(enc);
+itb_encryptor_free(enc);
+```
+
+The seven-seed split is internal to the encryptor; the on-wire
+ciphertext format is identical in shape to Single Ouroboros — only the
+internal payload split / interleave differs. Mixed-primitive Triple is
+reachable via `itb_encryptor_new_mixed3`.
+
+## Quick Start — Areion-SoEM-512 + HMAC-BLAKE3 (Low-Level, MAC Authenticated)
+
+The lower-level path uses explicit `itb_seed_t` handles for the
+noise / data / start trio plus an optional dedicated lock seed wired in
+through `itb_seed_attach_lock_seed`. Useful when the caller needs full
+control over per-slot keying (e.g. PRF material stored in an HSM) or
+when slotting into the existing Go `itb.Encrypt` / `itb.Decrypt` call
+surface from a C client. The high-level `itb_encryptor_t` above wraps
+this same path with one constructor call.
+
+```c
+/* Sender */
+
+#include <itb.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Optional: global configuration (all process-wide, atomic) */
+itb_set_max_workers(8);     /* limit to 8 CPU cores (default: 0 = all CPUs) */
+itb_set_nonce_bits(512);    /* 512-bit nonce (default: 128-bit) */
+itb_set_barrier_fill(4);    /* CSPRNG fill margin (default: 1, valid: 1, 2, 4, 8, 16, 32) */
+
+itb_set_bit_soup(1);        /* optional bit-level split ("bit-soup"; default: 0 = byte-level) */
+                            /* automatically enabled for Single Ouroboros if
+                             * itb_set_lock_soup(1) is enabled or vice versa */
+
+itb_set_lock_soup(1);       /* optional Insane Interlocked Mode: per-chunk PRF-keyed
+                             * bit-permutation overlay on top of bit-soup;
+                             * automatically enabled for Single Ouroboros if
+                             * itb_set_bit_soup(1) is enabled or vice versa */
+
+/* Three independent CSPRNG-keyed Areion-SoEM-512 seeds. Each Seed
+ * pre-keys its primitive once at construction; the C ABI / FFI
+ * layer auto-wires the AVX-512 + VAES + ILP + ZMM-batched chain-
+ * absorb dispatch through the Seed's BatchHash arm — no manual
+ * batched-arm attachment is required on the C side. */
+itb_seed_t *ns = NULL, *ds = NULL, *ss = NULL;
+itb_seed_new("areion512", 2048, &ns);   /* random noise CSPRNG seeds + hash key generated */
+itb_seed_new("areion512", 2048, &ds);   /* random data  CSPRNG seeds + hash key generated */
+itb_seed_new("areion512", 2048, &ss);   /* random start CSPRNG seeds + hash key generated */
+
+/* Optional: dedicated lockSeed for the bit-permutation derivation
+ * channel. Separates that PRF's keying material from the noiseSeed-
+ * driven noise-injection channel without changing the public
+ * encrypt / decrypt signatures. The bit-permutation overlay must
+ * be engaged (itb_set_bit_soup(1) or itb_set_lock_soup(1) — both
+ * already on above) before the first encrypt; the build-PRF guard
+ * fires on encrypt-time when an attach is present without either
+ * flag. */
+itb_seed_t *ls = NULL;
+itb_seed_new("areion512", 2048, &ls);   /* random lock CSPRNG seeds + hash key generated */
+itb_seed_attach_lock_seed(ns, ls);
+
+/* HMAC-BLAKE3 — 32-byte CSPRNG key, 32-byte tag. Real code should
+ * pull the key bytes from a CSPRNG (e.g. /dev/urandom via fread);
+ * the zero key here is for example purposes only. */
+uint8_t mac_key[32] = {0};
+itb_mac_t *mac = NULL;
+itb_mac_new("hmac-blake3", mac_key, sizeof mac_key, &mac);
+
+const char *plaintext = "any text or binary data - including 0x00 bytes";
+
+/* Authenticated encrypt — 32-byte tag is computed across the
+ * entire decrypted capacity and embedded inside the RGBWYOPA
+ * container, preserving oracle-free deniability. */
+uint8_t *encrypted = NULL;
+size_t   encrypted_len = 0;
+itb_encrypt_auth(ns, ds, ss, mac, plaintext, strlen(plaintext),
+                 &encrypted, &encrypted_len);
+printf("encrypted: %zu bytes\n", encrypted_len);
+
+/* Cross-process persistence: Blob512 packs every seed's hash key
+ * + components, the optional dedicated lockSeed, and the MAC key
+ * + name into one JSON blob alongside the captured process-wide
+ * globals. ITB_BLOB_OPT_LOCKSEED / ITB_BLOB_OPT_MAC opt the
+ * corresponding sections in. */
+itb_blob512_t *blob = NULL;
+itb_blob512_new(&blob);
+
+uint8_t hk_buf[64];
+size_t  hk_len = 0;
+uint64_t comp_buf[32];
+size_t   comp_count = 0;
+
+itb_seed_hash_key(ns, hk_buf, sizeof hk_buf, &hk_len);
+itb_blob512_set_key(blob, ITB_BLOB_SLOT_N, hk_buf, hk_len);
+itb_seed_components(ns, comp_buf, 32, &comp_count);
+itb_blob512_set_components(blob, ITB_BLOB_SLOT_N, comp_buf, comp_count);
+
+itb_seed_hash_key(ds, hk_buf, sizeof hk_buf, &hk_len);
+itb_blob512_set_key(blob, ITB_BLOB_SLOT_D, hk_buf, hk_len);
+itb_seed_components(ds, comp_buf, 32, &comp_count);
+itb_blob512_set_components(blob, ITB_BLOB_SLOT_D, comp_buf, comp_count);
+
+itb_seed_hash_key(ss, hk_buf, sizeof hk_buf, &hk_len);
+itb_blob512_set_key(blob, ITB_BLOB_SLOT_S, hk_buf, hk_len);
+itb_seed_components(ss, comp_buf, 32, &comp_count);
+itb_blob512_set_components(blob, ITB_BLOB_SLOT_S, comp_buf, comp_count);
+
+itb_seed_hash_key(ls, hk_buf, sizeof hk_buf, &hk_len);
+itb_blob512_set_key(blob, ITB_BLOB_SLOT_L, hk_buf, hk_len);
+itb_seed_components(ls, comp_buf, 32, &comp_count);
+itb_blob512_set_components(blob, ITB_BLOB_SLOT_L, comp_buf, comp_count);
+
+itb_blob512_set_mac_key(blob, mac_key, sizeof mac_key);
+itb_blob512_set_mac_name(blob, "hmac-blake3");
+
+uint8_t *blob_bytes = NULL;
+size_t   blob_bytes_len = 0;
+itb_blob512_export(blob, ITB_BLOB_OPT_LOCKSEED | ITB_BLOB_OPT_MAC,
+                   &blob_bytes, &blob_bytes_len);
+printf("persistence blob: %zu bytes\n", blob_bytes_len);
+
+/* Send `encrypted` + `blob_bytes`; release everything below. */
+itb_buffer_free(encrypted);
+itb_buffer_free(blob_bytes);
+itb_blob512_free(blob);
+itb_mac_free(mac);
+itb_seed_free(ls);
+itb_seed_free(ss);
+itb_seed_free(ds);
+itb_seed_free(ns);
+
+
+/* Receiver */
+
+itb_set_max_workers(8);   /* deployment knob — not serialised by Blob512 */
+
+/* Receive encrypted payload + blob_bytes */
+/* uint8_t *encrypted = ...; size_t encrypted_len = ...; */
+/* uint8_t *blob_bytes = ...; size_t blob_bytes_len = ...; */
+
+/* itb_blob512_import restores per-slot hash keys + components AND
+ * applies the captured globals (nonce_bits / barrier_fill / bit_soup
+ * / lock_soup) via the process-wide setters. */
+itb_blob512_t *restored = NULL;
+itb_blob512_new(&restored);
+itb_blob512_import(restored, blob_bytes, blob_bytes_len);
+
+uint8_t  hk2[64];
+size_t   hk2_len = 0;
+uint64_t comp2[32];
+size_t   comp2_count = 0;
+
+itb_blob512_get_key(restored, ITB_BLOB_SLOT_N, hk2, sizeof hk2, &hk2_len);
+itb_blob512_get_components(restored, ITB_BLOB_SLOT_N, comp2, 32, &comp2_count);
+itb_seed_t *ns2 = NULL;
+itb_seed_from_components("areion512", comp2, comp2_count,
+                         hk2, hk2_len, &ns2);
+/* ... wire ds2, ss2, ls2 the same way; rebuild MAC; itb_decrypt_auth ... */
+```
+
+## Streams — chunked I/O over caller-owned read / write callbacks
+
+`itb_stream_encrypt` / `itb_stream_decrypt` (and the seven-seed
+counterparts `itb_stream_encrypt_triple` / `itb_stream_decrypt_triple`)
+wrap the one-shot encrypt / decrypt API behind a chunked I/O surface.
+ITB ciphertexts cap at ~64 MB plaintext per chunk; streaming larger
+payloads slices the input into chunks at the binding layer, encrypts
+each chunk through the regular FFI path, and concatenates the results.
+Memory peak is bounded by `chunk_size` regardless of the total
+payload length. The caller MUST pass `chunk_size > 0` — zero is
+rejected with `ITB_BAD_INPUT`. `ITB_DEFAULT_CHUNK_SIZE` (16 MiB)
+is exposed as a recommended starting value for callers without a
+domain-specific preference.
+
+The stream wrappers take Seeds (and an optional MAC), NOT an
+`itb_encryptor_t` handle — matching the canonical cross-binding
+contract. The caller supplies a
+`(read_fn, user_ctx)` pair for the input source and a
+`(write_fn, user_ctx)` pair for the output sink, where the `user_ctx`
+pointers carry caller state (file descriptor, in-memory buffer cursor,
+etc.) without globals. `read_fn` signals EOF via `*out_n = 0`; `write_fn`
+must consume the full `(buf, n)` span before returning. Either callback
+returning a non-zero status code aborts the stream operation with
+`ITB_INTERNAL`.
+
+```c
+#include <itb.h>
+#include <string.h>
+
+/* Caller state shared between read and write callbacks. */
+struct buf_ctx {
+    const uint8_t *src;
+    size_t         src_len;
+    size_t         src_pos;
+    uint8_t       *sink;
+    size_t         sink_len;
+    size_t         sink_cap;
+};
+
+static int read_cb(void *user_ctx, void *buf, size_t cap, size_t *out_n)
+{
+    struct buf_ctx *c = user_ctx;
+    size_t take = c->src_len - c->src_pos;
+    if (take > cap) take = cap;
+    memcpy(buf, c->src + c->src_pos, take);
+    c->src_pos += take;
+    *out_n = take;
+    return 0;
+}
+
+static int write_cb(void *user_ctx, const void *buf, size_t n)
+{
+    struct buf_ctx *c = user_ctx;
+    if (c->sink_len + n > c->sink_cap) {
+        size_t new_cap = c->sink_cap ? c->sink_cap * 2 : 4096;
+        while (new_cap < c->sink_len + n) new_cap *= 2;
+        uint8_t *p = realloc(c->sink, new_cap);
+        if (!p) return 1;
+        c->sink = p;
+        c->sink_cap = new_cap;
+    }
+    memcpy(c->sink + c->sink_len, buf, n);
+    c->sink_len += n;
+    return 0;
+}
+
+/* Encrypt direction: read plaintext from `src`, write concatenated
+ * ITB chunks to `sink`. */
+itb_seed_t *n = NULL, *d = NULL, *s = NULL;
+itb_seed_new("blake3", 1024, &n);
+itb_seed_new("blake3", 1024, &d);
+itb_seed_new("blake3", 1024, &s);
+
+const char *src = "the streamed payload, possibly many MiB long";
+struct buf_ctx ectx = {
+    .src = (const uint8_t *) src, .src_len = strlen(src), .src_pos = 0,
+    .sink = NULL, .sink_len = 0, .sink_cap = 0,
+};
+itb_stream_encrypt(n, d, s, /* mac */ NULL,
+                   read_cb, &ectx,
+                   write_cb, &ectx,
+                   ITB_DEFAULT_CHUNK_SIZE);   /* chunk_size — must be > 0 */
+
+/* Decrypt direction: feed `ectx.sink` back through, recover plaintext. */
+struct buf_ctx dctx = {
+    .src = ectx.sink, .src_len = ectx.sink_len, .src_pos = 0,
+    .sink = NULL, .sink_len = 0, .sink_cap = 0,
+};
+itb_stream_decrypt(n, d, s, NULL,
+                   read_cb, &dctx,
+                   write_cb, &dctx,
+                   0);
+
+/* dctx.sink now holds the recovered plaintext. */
+free(ectx.sink);
+free(dctx.sink);
+itb_seed_free(s);
+itb_seed_free(d);
+itb_seed_free(n);
+```
+
+Switching `itb_set_nonce_bits` mid-stream produces a chunk header
+layout the paired decryptor (which snapshots `itb_header_size` at
+chunk boundary) cannot parse — the nonce size must be stable for the
+lifetime of one stream pair.
+
+### Seed-lifetime contract on streams
+
+The stream entry points cache the raw libitb handles internally. Every
+Seed (and the optional MAC) handed to a stream call MUST remain alive —
+un-freed — for the entire call. Letting any seed go out of scope before
+the call returns is undefined behaviour (use-after-free in the FFI
+call). C relies on caller discipline. Practical pattern: declare the
+Seeds in the same scope as the stream call, free them only after the
+call returns.
+
+## Native Blob — low-level state persistence
+
+`itb_blob128_t` / `itb_blob256_t` / `itb_blob512_t` wrap the libitb
+Native Blob C ABI: width-specific containers that pack the low-level
+encryptor material (per-seed hash key + components + optional dedicated
+lockSeed + optional MAC key + name) plus the captured process-wide
+configuration into one self-describing JSON blob. Used on the
+lower-level encrypt / decrypt path where each seed slot may carry a
+different primitive — the high-level `itb_encryptor_export` wraps a
+narrower one-primitive-per-encryptor surface that uses the same wire
+format under the hood.
+
+Slot constants (defined in `<itb.h>`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ITB_BLOB_SLOT_N` | 0 | shared: noiseSeed + KeyN |
+| `ITB_BLOB_SLOT_D` | 1 | Single: dataSeed + KeyD |
+| `ITB_BLOB_SLOT_S` | 2 | Single: startSeed + KeyS |
+| `ITB_BLOB_SLOT_L` | 3 | optional any mode: dedicated lockSeed |
+| `ITB_BLOB_SLOT_D1` | 4 | Triple: dataSeed1 + KeyD1 |
+| `ITB_BLOB_SLOT_D2` | 5 | Triple: dataSeed2 + KeyD2 |
+| `ITB_BLOB_SLOT_D3` | 6 | Triple: dataSeed3 + KeyD3 |
+| `ITB_BLOB_SLOT_S1` | 7 | Triple: startSeed1 + KeyS1 |
+| `ITB_BLOB_SLOT_S2` | 8 | Triple: startSeed2 + KeyS2 |
+| `ITB_BLOB_SLOT_S3` | 9 | Triple: startSeed3 + KeyS3 |
+
+Export option bitmask (`opts` parameter on `itb_blobW_export` /
+`itb_blobW_export3`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ITB_BLOB_OPT_LOCKSEED` | `1 << 0` | emit `l` slot (KeyL + components) |
+| `ITB_BLOB_OPT_MAC` | `1 << 1` | emit MAC key + name |
+
+The blob is mode-discriminated: `itb_blobW_export` packs Single
+material, `itb_blobW_export3` packs Triple material; the matching
+`itb_blobW_import` / `itb_blobW_import3` receivers reject the wrong
+importer with `ITB_BLOB_MODE_MISMATCH`. Globals (NonceBits / BarrierFill
+/ BitSoup / LockSoup) are captured into the blob at export time and
+applied process-wide on import via the corresponding `itb_set_*`
+setters.
+
+## Hash primitives (Single / Triple)
+
+Names match the canonical `hashes/` registry. Listed below in the
+binding-side canonical PRF-only ordering — **Areion-SoEM-256**,
+**Areion-SoEM-512**, **BLAKE2b-256**, **BLAKE2b-512**, **BLAKE2s**,
+**BLAKE3**, **AES-CMAC**, **SipHash-2-4**, **ChaCha20** — the FFI names
+are `areion256`, `areion512`, `blake2b256`, `blake2b512`, `blake2s`,
+`blake3`, `aescmac`, `siphash24`, `chacha20`. The below-spec lab
+primitives in the documentation's canonical ordering (CRC128, FNV-1a,
+MD5) are not exposed through the libitb registry and are absent from
+the C binding by construction. Triple Ouroboros (3× security) takes
+seven seeds (one shared `noiseSeed` plus three `dataSeed` and three
+`startSeed`) via `itb_encrypt_triple` / `itb_decrypt_triple` and the
+authenticated counterparts `itb_encrypt_auth_triple` /
+`itb_decrypt_auth_triple`. Streaming counterparts:
+`itb_stream_encrypt_triple` / `itb_stream_decrypt_triple`.
+
+All seeds passed to one encrypt / decrypt call must share the same
+native hash width. Mixing widths surfaces `ITB_SEED_WIDTH_MIX`.
+
+## Process-wide configuration
+
+Every setter takes effect for all subsequent encrypt / decrypt calls in
+the process. Out-of-range values surface as `ITB_BAD_INPUT` rather
+than crashing.
+
+| Function | Accepted values | Default |
+|---|---|---|
+| `itb_set_max_workers(n)` | non-negative int | 0 (auto) |
+| `itb_set_nonce_bits(n)` | 128, 256, 512 | 128 |
+| `itb_set_barrier_fill(n)` | 1, 2, 4, 8, 16, 32 | 1 |
+| `itb_set_bit_soup(mode)` | 0 (off), non-zero (on) | 0 |
+| `itb_set_lock_soup(mode)` | 0 (off), non-zero (on) | 0 |
+
+Read-only constants: `itb_max_key_bits()`, `itb_channels()`,
+`itb_header_size()`, `itb_version(out, cap, &out_len)`.
+
+For low-level chunk parsing (e.g. when implementing custom file formats
+around ITB chunks): `itb_parse_chunk_len(header, header_len, &out)`
+inspects the fixed-size chunk header and returns the chunk's total
+on-the-wire length; `itb_header_size()` returns the active header byte
+count (20 / 36 / 68 for nonce sizes 128 / 256 / 512 bits).
+
+MAC names available via `itb_mac_count` + `itb_mac_name`: `kmac256`,
+`hmac-sha256`, `hmac-blake3`. Hash names via `itb_hash_count` +
+`itb_hash_name`.
+
+## Concurrency
+
+A single `itb_encryptor_t` is **not safe** for concurrent use from
+multiple threads — cipher methods (`itb_encryptor_encrypt` /
+`itb_encryptor_decrypt` / `itb_encryptor_encrypt_auth` /
+`itb_encryptor_decrypt_auth`), per-instance setters, and
+`itb_encryptor_close` / `itb_encryptor_import` all mutate per-instance
+state without locking. Sharing one encryptor across threads requires
+external synchronisation; distinct encryptor handles, each owned by
+one thread, run independently against the libitb worker pool.
+
+By contrast, the low-level cipher free functions (`itb_encrypt` /
+`itb_decrypt` / `itb_encrypt_auth` / `itb_decrypt_auth` plus the
+Triple-Ouroboros counterparts) take read-only Seed pointers and
+allocate output per call — they are thread-safe under concurrent
+invocation on the same seeds. The exception is the per-instance Config
+snapshot inside `itb_encryptor_t`: concurrent setter mutations on a
+Config that other threads are reading must be serialised by the
+caller. Process-wide `itb_set_*` setters (`itb_set_nonce_bits` /
+`itb_set_barrier_fill` / `itb_set_max_workers` / `itb_set_bit_soup` /
+`itb_set_lock_soup`) are atomic and safe to call from any thread; the
+caveat is logical, not atomic — changing a knob WHILE an encrypt /
+decrypt call is in flight can corrupt that operation, since the cipher
+snapshots the configuration at call entry and a mid-flight change
+breaks the running invariants.
+
+`itb_seed_attach_lock_seed` mutates seed state (not a single atomic
+counter) and is **not thread-safe** — call it outside any in-flight
+cipher operation on the same noise seed.
+
+The textual diagnostic surfaced by `itb_last_error()` is captured into
+thread-local storage on every failing call, so concurrent threads do
+not race on it. The structural status code returned by every entry
+point is unaffected by thread interleaving.
+
+**Signal-handler reentrance.** None of the binding's public entry
+points are async-signal-safe. They allocate via libc `malloc`, mutate
+the per-thread last-error TLS buffer, and dispatch to libitb's Go-side
+worker pool — all incompatible with the `signal-safety(7)` contract.
+Do not call any binding entry point from a signal handler; if a signal
+handler must trigger encryption / decryption, post the work to a
+regular thread (e.g. via `eventfd` / pipe-write) and let that thread
+re-enter the binding.
+
+## Error model
+
+Every libitb entry point returns a structured `itb_status_t` enum value
+plus a textual diagnostic accessible through the per-thread accessors
+`itb_last_status()` and `itb_last_error()`:
+
+```c
+#include <itb.h>
+#include <stdio.h>
+
+uint8_t keybuf[32] = {0};
+itb_mac_t *bad = NULL;
+itb_status_t st = itb_mac_new("nonsense", keybuf, sizeof keybuf, &bad);
+if (st != ITB_OK) {
+    /* st == ITB_BAD_MAC */
+    fprintf(stderr, "code=%d msg=%s\n", st, itb_last_error());
+}
+```
+
+The structural status code is the authoritative attribution for any
+failing call; the textual diagnostic is decorative and survives only
+until the next libitb call on the same thread. `itb_last_error()`
+never returns `NULL` — first-call-with-no-error returns the empty
+string `""`.
+
+Empty plaintext / ciphertext is rejected by libitb itself with
+`ITB_ENCRYPT_FAILED` (the Go-side `Encrypt128` / `Decrypt128` family
+returns "itb: empty data" before any work). The C binding propagates
+the rejection verbatim — pass at least one byte.
+
+The `itb_encryptor_import` path additionally captures the offending
+JSON field name on `ITB_EASY_MISMATCH`; retrieve it via
+`itb_easy_last_mismatch_field(out, cap, &out_len)` (two-call probe,
+NUL-stripped output, empty string when the most recent failure was not
+a mismatch).
+
+### Status codes
+
+Mirror the constants in `cmd/cshared/internal/capi/errors.go`
+bit-identically.
+
+| Constant | Numeric | Meaning |
+|---|---|---|
+| `ITB_OK` | 0 | Success — the only non-failure return value |
+| `ITB_BAD_HASH` | 1 | Unknown hash primitive name |
+| `ITB_BAD_KEY_BITS` | 2 | ITB key width invalid for the chosen primitive |
+| `ITB_BAD_HANDLE` | 3 | FFI handle invalid or already freed |
+| `ITB_BAD_INPUT` | 4 | Generic shape / range / domain violation on a call argument |
+| `ITB_BUFFER_TOO_SMALL` | 5 | Output buffer cap below required size; probe-then-allocate idiom |
+| `ITB_ENCRYPT_FAILED` | 6 | Encrypt path raised on the Go side (rare; structural / OOM / empty input) |
+| `ITB_DECRYPT_FAILED` | 7 | Decrypt path raised on the Go side (corrupt ciphertext shape) |
+| `ITB_SEED_WIDTH_MIX` | 8 | Seeds passed to one call do not share the same native hash width |
+| `ITB_BAD_MAC` | 9 | Unknown MAC name or key-length violates the primitive's `min_key_bytes` |
+| `ITB_MAC_FAILURE` | 10 | MAC verification failed — tampered ciphertext or wrong MAC key |
+| `ITB_EASY_CLOSED` | 11 | Easy Mode encryptor call after `itb_encryptor_close` |
+| `ITB_EASY_MALFORMED` | 12 | Easy Mode `import` blob fails JSON parse / structural check |
+| `ITB_EASY_VERSION_TOO_NEW` | 13 | Easy Mode blob version field higher than this build supports |
+| `ITB_EASY_UNKNOWN_PRIMITIVE` | 14 | Easy Mode blob references a primitive this build does not know |
+| `ITB_EASY_UNKNOWN_MAC` | 15 | Easy Mode blob references a MAC this build does not know |
+| `ITB_EASY_BAD_KEY_BITS` | 16 | Easy Mode blob's `key_bits` invalid for its primitive |
+| `ITB_EASY_MISMATCH` | 17 | Easy Mode blob disagrees with the receiver on `primitive` / `key_bits` / `mode` / `mac`; field name via `itb_easy_last_mismatch_field` |
+| `ITB_EASY_LOCKSEED_AFTER_ENCRYPT` | 18 | `itb_encryptor_set_lock_seed(e, 1)` called after the first encrypt — must precede the first ciphertext |
+| `ITB_BLOB_MODE_MISMATCH` | 19 | Native Blob importer received a Single blob into a Triple receiver (or vice versa) |
+| `ITB_BLOB_MALFORMED` | 20 | Native Blob payload fails JSON parse / magic / structural check |
+| `ITB_BLOB_VERSION_TOO_NEW` | 21 | Native Blob version field higher than this libitb build supports |
+| `ITB_BLOB_TOO_MANY_OPTS` | 22 | Native Blob export opts mask carries unsupported bits |
+| `ITB_INTERNAL` | 99 | Generic "internal" sentinel for paths the caller cannot recover from at the binding layer |
+
+## Tests
+
+`./run_tests.sh` builds and runs every `tests/test_*.c` file. The 30
+test files mirror the cross-binding coverage:
+
+```
+test_aescmac          test_easy_aescmac        test_easy_streams
+test_areion           test_easy_areion         test_nonce_sizes
+test_attach_lock_seed test_easy_auth           test_persistence
+test_auth             test_easy_blake2b        test_roundtrip
+test_blake2b          test_easy_blake2s        test_siphash24
+test_blake2s          test_easy_blake3         test_streams
+test_blake3           test_easy.c              test_streams_nonce
+test_blob             test_easy_chacha20
+test_chacha20         test_easy_mixed
+test_config           test_easy_nonce_sizes
+                      test_easy_persistence
+                      test_easy_roundtrip
+                      test_easy_siphash24
+```
+
+Each test file is compiled to its own standalone executable under
+`tests/build/` and linked against `build/libitb_c.a` plus `libitb.so`
+plus the system [Check](https://libcheck.github.io/check/) unit-testing
+framework. Per-process isolation gives every test a fresh libitb global
+state.
+
+Equivalent Make targets:
+
+```bash
+make tests        # compile every test binary
+make test         # compile + run via ./run_tests.sh
+```
+
+## Benchmarks
+
+A custom Go-bench-style harness lives under `bench/` and covers the
+four ops (`encrypt`, `decrypt`, `encrypt_auth`, `decrypt_auth`) across
+the nine PRF-grade primitives plus one mixed-primitive variant for
+both Single and Triple Ouroboros at 1024-bit ITB key width and 16 MiB
+payload. See [`bench/README.md`](bench/README.md) for invocation /
+environment variables / output format and [`bench/BENCH.md`](bench/BENCH.md)
+for recorded throughput results across the canonical pass matrix.
+
+The four-pass canonical sweep that fills `bench/BENCH.md` is driven by
+the wrapper script in the binding root:
+
+```bash
+make bench
+./run_bench.sh                  # full 4-pass canonical sweep
+```
+
+## Constraints
+
+- **C17 minimum.** The header uses `_Static_assert`-free declarations
+  and the source uses standard C17 idioms (`stdint.h` typedefs,
+  designated initialisers, compound literals). GCC ≥ 10 and Clang ≥ 13
+  meet the baseline.
+- **Single public header.** All consumer-visible declarations live in
+  `include/itb.h`; the layout-internal `src/internal.h` is
+  intentionally hidden.
+- **Static archive only.** The binding ships `build/libitb_c.a`; no
+  shared-library variant is produced. Consumers link the archive
+  alongside `libitb.so`.
+- **No external runtime deps beyond libc + libitb.so.** The public
+  surface uses only `<stddef.h>` + `<stdint.h>`; the implementation
+  uses `<stdlib.h>` + `<string.h>` + `<assert.h>` plus the C11
+  `_Thread_local` storage-class for the per-thread last-error buffer
+  (no `pthread` link dependency — the dynamic linker's TLS allocator
+  resolves storage on first thread access). The
+  [Check](https://libcheck.github.io/check/) framework is required only
+  for the test runner, not for consumer applications.
+- **Frozen C ABI.** The `ITB_*` exports in `dist/<os>-<arch>/libitb.h`
+  define the contract; the binding does not extend or reshape them.
+- **No `dlopen`.** Symbols are bound at link time. Consumers wanting
+  runtime FFI loading (different `libitb.so` per environment) can wrap
+  this binding's static archive in their own `dlopen` shim.
