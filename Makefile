@@ -40,7 +40,8 @@ LIB_SRCS = \
     src/cipher.c \
     src/encryptor.c \
     src/blob.c \
-    src/streams.c
+    src/streams.c \
+    src/wrapper.c
 LIB_OBJS = $(LIB_SRCS:.c=.o)
 
 # ---- Default target --------------------------------------------------
@@ -93,9 +94,26 @@ bench/build/%: bench/%.c $(BENCH_COMMON) $(BENCH_HEADERS) build/libitb_c.a
 	$(CC) $(CFLAGS) -Ibench $< $(BENCH_COMMON) -o $@ \
 	    -Lbuild -litb_c $(LDFLAGS) $(LIBITB)
 
+# ---- Eitb (Phase 7) -------------------------------------------------
+# Wrapper × ITB matrix runner. One binary at bin/eitb that links
+# eitb/eitb.c + eitb/sha256.c against build/libitb_c.a + libitb.so.
+# Mirrors the per-binding eitb tools (rust examples/eitb.rs, python
+# eitb/eitb.py, etc.) — runs every (example × cipher) cell and prints
+# `=== Summary: 24 PASS, 0 FAIL ===`.
+EITB_SRCS    := eitb/eitb.c eitb/sha256.c
+EITB_HEADERS := eitb/sha256.h
+EITB_BIN     := bin/eitb
+
+eitb: $(EITB_BIN)
+
+$(EITB_BIN): $(EITB_SRCS) $(EITB_HEADERS) build/libitb_c.a
+	mkdir -p bin
+	$(CC) $(CFLAGS) -Ieitb $(EITB_SRCS) -o $@ \
+	    -Lbuild -litb_c $(LDFLAGS) $(LIBITB)
+
 # ---- Cleanup ---------------------------------------------------------
 clean:
 	rm -f src/*.o
-	rm -rf build tests/build bench/build
+	rm -rf build tests/build bench/build bin
 
-.PHONY: all tests test bench clean
+.PHONY: all tests test bench eitb clean

@@ -772,20 +772,43 @@ static itb_status_t inspect_auth_chunk(const uint8_t *buf, size_t buf_len,
     if (buf_len < header_size) {
         return ITB_BUFFER_TOO_SMALL; /* internal sentinel — caller waits for more */
     }
-    size_t chunk_len = 0;
-    itb_status_t st = itb_parse_chunk_len(buf, header_size, &chunk_len);
-    if (st != ITB_OK) {
-        return st;
+    /* Per-encryptor: chunk_len computed from caller-supplied header_size,
+     * no process-global lookup. The auth-stream caller derives header_size
+     * via ITB_Easy_HeaderSize(handle), which honours per-encryptor nonce
+     * bits; routing through the global itb_parse_chunk_len would re-read
+     * ITB_GetNonceBits and silently diverge from the per-instance value.
+     * The W/H validation predicates below mirror capi.ParseChunkLen. */
+    size_t w = read_be16(buf + header_size - 4);
+    size_t h = read_be16(buf + header_size - 2);
+    if (w == 0 || h == 0) {
+        return itb_internal_set_error_msg(
+            ITB_BAD_INPUT, "auth stream: zero chunk dimensions");
     }
+    if (w > (SIZE_MAX / h)) {
+        return itb_internal_set_error_msg(
+            ITB_BAD_INPUT, "auth stream: chunk dimensions overflow");
+    }
+    size_t total_pixels = w * h;
+    /* ITB_Channels() is a read-only constant (capi.Channels = itb.Channels = 8);
+     * no global mutation path can change the value at runtime. */
+    int channels = ITB_Channels();
+    if ((size_t) channels == 0 ||
+        total_pixels > (SIZE_MAX / (size_t) channels)) {
+        return itb_internal_set_error_msg(
+            ITB_BAD_INPUT, "auth stream: chunk pixel count overflow");
+    }
+    /* Mirror the maxTotalPixels cap from capi.ParseChunkLen. */
+    if (total_pixels > 10000000u) {
+        return itb_internal_set_error_msg(
+            ITB_BAD_INPUT, "auth stream: chunk pixel count exceeds cap");
+    }
+    size_t chunk_len = header_size + total_pixels * (size_t) channels;
     if (chunk_len == 0) {
         return itb_internal_set_error_msg(
             ITB_BAD_INPUT, "auth stream: zero-length chunk header");
     }
-    /* W and H sit at header_size - 4 and header_size - 2. */
-    size_t w = read_be16(buf + header_size - 4);
-    size_t h = read_be16(buf + header_size - 2);
     *out_chunk_len = chunk_len;
-    *out_pixels = (uint64_t) w * (uint64_t) h;
+    *out_pixels = (uint64_t) total_pixels;
     return ITB_OK;
 }
 
@@ -1174,7 +1197,7 @@ struct cumctx {
      * different segments. The chunk wire layout always starts with
      * the header at offset 0 of the chunk, so the wrapper buffers
      * the first `header_size` bytes per chunk before parsing them. */
-    uint8_t  hdr_buf[64];
+    uint8_t  hdr_buf[128];
     size_t   hdr_have;
     int      hdr_done;        /* 0 until the current chunk's header is parsed */
 };
@@ -1961,9 +1984,9 @@ static itb_status_t encryptor_check_open(const itb_encryptor_t *e)
 
 /* Wipe-on-grow cache router for the Easy AEAD streaming per-chunk
  * dispatchers. Mirrors encryptor.c::ensure_cache against the SAME
- * encryptor->out_cache field that cipher_call uses for single-shot
+ * encryptor->out_cache field that cipher_call uses for Single Message
  * Easy encrypt / decrypt — the §7.1 contract codifies cache reuse on
- * the per-chunk Easy AEAD path with the same scope as the single-shot
+ * the per-chunk Easy AEAD path with the same scope as the Single Message
  * canonical reference. The cache stays internal as the FFI write
  * target ONLY; user code never observes the cache pointer
  * (§11.o.2 aliasing-footgun mitigation — handled at the return path

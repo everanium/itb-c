@@ -132,6 +132,8 @@ constructor time.
 ```c
 #include "itb.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define CHUNK_SIZE  ((size_t)16 * 1024 * 1024)
 
@@ -144,20 +146,93 @@ static int file_write_fn(void *ctx, const void *buf, size_t n) {
     return (fwrite(buf, 1, n, (FILE *) ctx) == n) ? 0 : -1;
 }
 
+/* In-memory grow sink — the inner ITB stream lands here so the wrap-
+ * stream writer can XOR the whole transcript through one keystream
+ * session before it reaches the wire. */
+typedef struct { uint8_t *data; size_t len, cap; } grow_t;
+static int grow_write(void *ctx, const void *buf, size_t n) {
+    grow_t *g = ctx;
+    if (g->len + n > g->cap) {
+        size_t nc = g->cap ? g->cap * 2 : 4096;
+        while (nc < g->len + n) nc *= 2;
+        uint8_t *p = realloc(g->data, nc);
+        if (!p) return 1;
+        g->data = p; g->cap = nc;
+    }
+    memcpy(g->data + g->len, buf, n); g->len += n;
+    return 0;
+}
+
+typedef struct { const uint8_t *p; size_t len, pos; } mread_t;
+static int mread_read(void *ctx, void *buf, size_t cap, size_t *out_n) {
+    mread_t *m = ctx;
+    size_t take = m->len - m->pos; if (take > cap) take = cap;
+    memcpy(buf, m->p + m->pos, take); m->pos += take; *out_n = take;
+    return 0;
+}
+
 itb_encryptor_t *enc = NULL;
 itb_encryptor_new("areion512", 1024, "hmac-blake3", 1, &enc);
 
-FILE *fin  = fopen("/tmp/64mb.src", "rb");
-FILE *fout = fopen("/tmp/64mb.enc", "wb");
-itb_encryptor_stream_encrypt_auth(enc, file_read_fn, fin,
-                                  file_write_fn, fout, CHUNK_SIZE);
-fclose(fin); fclose(fout);
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+uint8_t *outerKey = NULL; size_t outerKey_len = 0;
+itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                         &outerKey, &outerKey_len);
 
-fin  = fopen("/tmp/64mb.enc", "rb");
+/* Sender — collect the inner ITB stream in memory. */
+grow_t inner = {0};
+FILE *fin = fopen("/tmp/64mb.src", "rb");
+itb_encryptor_stream_encrypt_auth(enc, file_read_fn, fin,
+                                  grow_write, &inner, CHUNK_SIZE);
+fclose(fin);
+
+/* Format-deniability ITB masking via outer-cipher streaming wrapper (AES-128-CTR) - same ~0% overhead in stream mode (Recommended in every case). */
+uint8_t nonce_buf[16] = {0};
+itb_wrap_stream_writer_t *ww = NULL;
+itb_wrap_stream_writer_new(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                           outerKey, outerKey_len,
+                           nonce_buf, sizeof nonce_buf, &ww);
+size_t nlen = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen);
+
+uint8_t *wire_body = (uint8_t *) malloc(inner.len);
+itb_wrap_stream_writer_update(ww, inner.data, inner.len, wire_body, inner.len);
+itb_wrap_stream_writer_free(ww);
+
+FILE *fout = fopen("/tmp/64mb.enc", "wb");
+fwrite(nonce_buf, 1, nlen, fout);
+fwrite(wire_body, 1, inner.len, fout);
+fclose(fout);
+free(wire_body);
+free(inner.data);
+
+/* Receiver — strip nonce prefix, unwrap, feed to decrypt_auth. */
+fin = fopen("/tmp/64mb.enc", "rb");
+uint8_t wire_nonce[16] = {0};
+fread(wire_nonce, 1, nlen, fin);
+itb_unwrap_stream_reader_t *ur = NULL;
+itb_unwrap_stream_reader_new(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                             outerKey, outerKey_len,
+                             wire_nonce, nlen, &ur);
+
+grow_t inner2 = {0};
+{
+    uint8_t buf[1 << 16], obuf[1 << 16]; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, fin)) > 0) {
+        itb_unwrap_stream_reader_update(ur, buf, n, obuf, sizeof obuf);
+        grow_write(&inner2, obuf, n);
+    }
+}
+fclose(fin);
+itb_unwrap_stream_reader_free(ur);
+
+mread_t inner_src = { inner2.data, inner2.len, 0 };
 fout = fopen("/tmp/64mb.dst", "wb");
-itb_encryptor_stream_decrypt_auth(enc, file_read_fn, fin,
+itb_encryptor_stream_decrypt_auth(enc, mread_read, &inner_src,
                                   file_write_fn, fout, CHUNK_SIZE);
-fclose(fin); fclose(fout);
+fclose(fout);
+free(inner2.data);
+itb_buffer_free(outerKey);
 itb_encryptor_free(enc);
 ```
 
@@ -201,11 +276,38 @@ itb_seed_new("areion512", 1024, &data);
 itb_seed_new("areion512", 1024, &start);
 itb_mac_new ("hmac-blake3", mac_key, sizeof mac_key, &mac);
 
-FILE *fin  = fopen("/tmp/64mb.src", "rb");
-FILE *fout = fopen("/tmp/64mb.enc", "wb");
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+uint8_t *outerKey = NULL; size_t outerKey_len = 0;
+itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                         &outerKey, &outerKey_len);
+
+/* Collect the inner ITB stream in memory. */
+grow_t inner = {0};
+FILE *fin = fopen("/tmp/64mb.src", "rb");
 itb_stream_encrypt_auth(noise, data, start, mac,
-    file_read_fn, fin, file_write_fn, fout, CHUNK_SIZE);
-fclose(fin); fclose(fout);
+    file_read_fn, fin, grow_write, &inner, CHUNK_SIZE);
+fclose(fin);
+
+/* Format-deniability ITB masking via outer-cipher streaming wrapper (AES-128-CTR) - same ~0% overhead in stream mode (Recommended in every case). */
+uint8_t nonce_buf[16] = {0};
+itb_wrap_stream_writer_t *ww = NULL;
+itb_wrap_stream_writer_new(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                           outerKey, outerKey_len,
+                           nonce_buf, sizeof nonce_buf, &ww);
+size_t nlen = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen);
+
+uint8_t *wire_body = (uint8_t *) malloc(inner.len);
+itb_wrap_stream_writer_update(ww, inner.data, inner.len, wire_body, inner.len);
+itb_wrap_stream_writer_free(ww);
+
+FILE *fout = fopen("/tmp/64mb.enc", "wb");
+fwrite(nonce_buf, 1, nlen, fout);
+fwrite(wire_body, 1, inner.len, fout);
+fclose(fout);
+free(wire_body);
+free(inner.data);
+itb_buffer_free(outerKey);
 
 itb_mac_free(mac);
 itb_seed_free(noise); itb_seed_free(data); itb_seed_free(start);
@@ -316,6 +418,27 @@ itb_encryptor_encrypt_auth(enc, plaintext, plaintext_len,
                            &encrypted, &encrypted_len);
 printf("encrypted: %zu bytes\n", encrypted_len);
 
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+uint8_t *outerKey = NULL;
+size_t   outerKey_len = 0;
+itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                         &outerKey, &outerKey_len);
+
+/* Format-deniability ITB masking through outer cipher AES-128-CTR with ~0% overhead over ITB Encrypt / Decrypt (Recommended in every case). */
+uint8_t nonce_buf[16] = {0};
+itb_wrap_in_place(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                  outerKey, outerKey_len,
+                  encrypted, encrypted_len,
+                  nonce_buf, sizeof nonce_buf);
+size_t nlen = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen);
+
+/* Compose the on-wire blob: `nonce || mutated-ciphertext`. */
+size_t   wire_len = nlen + encrypted_len;
+uint8_t *wire     = (uint8_t *) malloc(wire_len);
+memcpy(wire, nonce_buf, nlen);
+memcpy(wire + nlen, encrypted, encrypted_len);
+
 /* Streaming alternative — slice plaintext into chunk_size pieces
  * and call itb_encryptor_encrypt_auth() per chunk; each chunk
  * carries its own MAC tag. itb_encryptor_header_size() and
@@ -323,10 +446,12 @@ printf("encrypted: %zu bytes\n", encrypted_len);
  * (track this encryptor's own nonce_bits, NOT the process-wide
  * itb_header_size). */
 
-/* Send `encrypted` + `blob`; itb_encryptor_close zeroes key
- * material on the Go side and itb_encryptor_free deallocates the
- * wrapper. */
+/* Send `wire` + `blob` + `outerKey` (out-of-band); itb_encryptor_close
+ * zeroes key material on the Go side and itb_encryptor_free
+ * deallocates the wrapper. */
+free(wire);
 itb_buffer_free(encrypted);
+itb_buffer_free(outerKey);
 itb_buffer_free(blob);
 itb_encryptor_close(enc);
 itb_encryptor_free(enc);
@@ -334,9 +459,19 @@ itb_encryptor_free(enc);
 
 /* Receiver */
 
-/* Receive encrypted payload + state blob */
-/* uint8_t *encrypted = ...; size_t encrypted_len = ...; */
-/* uint8_t *blob = ...;      size_t blob_len = ...; */
+/* Receive on-wire blob + state blob + outerKey (out-of-band). */
+/* uint8_t *wire = ...; size_t wire_len = ...; */
+/* uint8_t *blob = ...; size_t blob_len = ...; */
+/* uint8_t *outerKey = ...; size_t outerKey_len = ...; */
+
+/* Strip nonce + XOR-decrypt the body in place; `wire[nlen..wire_len)`
+ * holds the ITB ciphertext after the call. */
+size_t nlen_r = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen_r);
+itb_unwrap_in_place(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                    outerKey, outerKey_len, wire, wire_len);
+const uint8_t *encrypted     = wire + nlen_r;
+size_t         encrypted_len = wire_len - nlen_r;
 
 itb_set_max_workers(8);  /* limit to 8 CPU cores (default: 0 = all CPUs) */
 
@@ -484,12 +619,40 @@ size_t   encrypted_len = 0;
 itb_encryptor_encrypt_auth(enc, plaintext, strlen(plaintext),
                            &encrypted, &encrypted_len);
 
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+uint8_t *outerKey = NULL;
+size_t   outerKey_len = 0;
+itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                         &outerKey, &outerKey_len);
+
+/* Format-deniability ITB masking through outer cipher AES-128-CTR with ~0% overhead over ITB Encrypt / Decrypt (Recommended in every case). */
+uint8_t nonce_buf[16] = {0};
+itb_wrap_in_place(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                  outerKey, outerKey_len,
+                  encrypted, encrypted_len,
+                  nonce_buf, sizeof nonce_buf);
+size_t nlen = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen);
+
+size_t   wire_len = nlen + encrypted_len;
+uint8_t *wire     = (uint8_t *) malloc(wire_len);
+memcpy(wire, nonce_buf, nlen);
+memcpy(wire + nlen, encrypted, encrypted_len);
+
 
 /* Receiver */
 
-/* Receive encrypted payload + state blob */
-/* uint8_t *encrypted = ...; size_t encrypted_len = ...; */
-/* uint8_t *blob = ...;      size_t blob_len = ...; */
+/* Receive on-wire blob + state blob + outerKey (out-of-band). */
+/* uint8_t *wire = ...; size_t wire_len = ...; */
+/* uint8_t *blob = ...; size_t blob_len = ...; */
+/* uint8_t *outerKey = ...; size_t outerKey_len = ...; */
+
+size_t nlen_r = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen_r);
+itb_unwrap_in_place(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                    outerKey, outerKey_len, wire, wire_len);
+const uint8_t *encrypted_r     = wire + nlen_r;
+size_t         encrypted_r_len = wire_len - nlen_r;
 
 /* Receiver constructs a matching mixed encryptor — every per-slot
  * primitive name plus key_bits and mac_name must agree with the
@@ -506,9 +669,12 @@ itb_encryptor_import(dec, blob, blob_len);
 
 uint8_t *decrypted = NULL;
 size_t   decrypted_len = 0;
-itb_encryptor_decrypt_auth(dec, encrypted, encrypted_len,
+itb_encryptor_decrypt_auth(dec, encrypted_r, encrypted_r_len,
                            &decrypted, &decrypted_len);
 printf("decrypted: %.*s\n", (int) decrypted_len, (const char *) decrypted);
+
+free(wire);
+itb_buffer_free(outerKey);
 ```
 
 ## Quick Start — Triple Ouroboros
@@ -520,6 +686,7 @@ call when `mode = 3` is passed to the constructor.
 
 ```c
 #include <itb.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* mode=3 selects Triple Ouroboros. All other constructor arguments
@@ -534,11 +701,37 @@ size_t   encrypted_len = 0;
 itb_encryptor_encrypt_auth(enc, plaintext, strlen(plaintext),
                            &encrypted, &encrypted_len);
 
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+uint8_t *outerKey = NULL;
+size_t   outerKey_len = 0;
+itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                         &outerKey, &outerKey_len);
+
+/* Format-deniability ITB masking through outer cipher AES-128-CTR with ~0% overhead over ITB Encrypt / Decrypt (Recommended in every case). */
+uint8_t nonce_buf[16] = {0};
+itb_wrap_in_place(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                  outerKey, outerKey_len,
+                  encrypted, encrypted_len,
+                  nonce_buf, sizeof nonce_buf);
+size_t nlen = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen);
+
+size_t   wire_len = nlen + encrypted_len;
+uint8_t *wire     = (uint8_t *) malloc(wire_len);
+memcpy(wire, nonce_buf, nlen);
+memcpy(wire + nlen, encrypted, encrypted_len);
+
+/* Receiver: strip nonce + XOR-decrypt body in place. */
+itb_unwrap_in_place(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                    outerKey, outerKey_len, wire, wire_len);
+
 uint8_t *decrypted = NULL;
 size_t   decrypted_len = 0;
-itb_encryptor_decrypt_auth(enc, encrypted, encrypted_len,
+itb_encryptor_decrypt_auth(enc, wire + nlen, wire_len - nlen,
                            &decrypted, &decrypted_len);
 
+free(wire);
+itb_buffer_free(outerKey);
 itb_buffer_free(encrypted);
 itb_buffer_free(decrypted);
 itb_encryptor_close(enc);
@@ -621,6 +814,26 @@ itb_encrypt_auth(ns, ds, ss, mac, plaintext, strlen(plaintext),
                  &encrypted, &encrypted_len);
 printf("encrypted: %zu bytes\n", encrypted_len);
 
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+uint8_t *outerKey = NULL;
+size_t   outerKey_len = 0;
+itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                         &outerKey, &outerKey_len);
+
+/* Format-deniability ITB masking through outer cipher AES-128-CTR with ~0% overhead over ITB Encrypt / Decrypt (Recommended in every case). */
+uint8_t nonce_buf[16] = {0};
+itb_wrap_in_place(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                  outerKey, outerKey_len,
+                  encrypted, encrypted_len,
+                  nonce_buf, sizeof nonce_buf);
+size_t nlen = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen);
+
+size_t   wire_len = nlen + encrypted_len;
+uint8_t *wire     = (uint8_t *) malloc(wire_len);
+memcpy(wire, nonce_buf, nlen);
+memcpy(wire + nlen, encrypted, encrypted_len);
+
 /* Cross-process persistence: Blob512 packs every seed's hash key
  * + components, the optional dedicated lockSeed, and the MAC key
  * + name into one JSON blob alongside the captured process-wide
@@ -663,7 +876,10 @@ itb_blob512_export(blob, ITB_BLOB_OPT_LOCKSEED | ITB_BLOB_OPT_MAC,
                    &blob_bytes, &blob_bytes_len);
 printf("persistence blob: %zu bytes\n", blob_bytes_len);
 
-/* Send `encrypted` + `blob_bytes`; release everything below. */
+/* Send `wire` + `blob_bytes` + `outerKey` (out-of-band). Release
+ * everything below. */
+free(wire);
+itb_buffer_free(outerKey);
 itb_buffer_free(encrypted);
 itb_buffer_free(blob_bytes);
 itb_blob512_free(blob);
@@ -678,9 +894,20 @@ itb_seed_free(ns);
 
 itb_set_max_workers(8);   /* deployment knob — not serialised by Blob512 */
 
-/* Receive encrypted payload + blob_bytes */
-/* uint8_t *encrypted = ...; size_t encrypted_len = ...; */
+/* Receive on-wire blob + blob_bytes + outerKey (out-of-band). */
+/* uint8_t *wire = ...; size_t wire_len = ...; */
 /* uint8_t *blob_bytes = ...; size_t blob_bytes_len = ...; */
+/* uint8_t *outerKey = ...; size_t outerKey_len = ...; */
+
+/* Strip nonce + XOR-decrypt the body in place; wire[nlen..wire_len)
+ * holds the ITB ciphertext after the call. */
+size_t nlen_r = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen_r);
+itb_unwrap_in_place(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                    outerKey, outerKey_len, wire, wire_len);
+const uint8_t *encrypted_r     = wire + nlen_r;
+size_t         encrypted_r_len = wire_len - nlen_r;
+(void) encrypted_r; (void) encrypted_r_len;
 
 /* itb_blob512_import restores per-slot hash keys + components AND
  * applies the captured globals (nonce_bits / barrier_fill / bit_soup
@@ -706,7 +933,7 @@ itb_seed_from_components("areion512", comp2, comp2_count,
 
 `itb_stream_encrypt` / `itb_stream_decrypt` (and the seven-seed
 counterparts `itb_stream_encrypt_triple` / `itb_stream_decrypt_triple`)
-wrap the one-shot encrypt / decrypt API behind a chunked I/O surface.
+wrap the Single Message Encrypt / Decrypt API behind a chunked I/O surface.
 ITB ciphertexts cap at ~64 MB plaintext per chunk; streaming larger
 payloads slices the input into chunks at the binding layer, encrypts
 each chunk through the regular FFI path, and concatenates the results.
@@ -768,8 +995,9 @@ static int write_cb(void *user_ctx, const void *buf, size_t n)
     return 0;
 }
 
-/* Encrypt direction: read plaintext from `src`, write concatenated
- * ITB chunks to `sink`. */
+/* Encrypt direction: read plaintext from `src`, collect ITB stream
+ * into `ectx.sink`, then wrap the whole transcript end-to-end through
+ * one keystream session. */
 itb_seed_t *n = NULL, *d = NULL, *s = NULL;
 itb_seed_new("blake3", 1024, &n);
 itb_seed_new("blake3", 1024, &d);
@@ -785,6 +1013,34 @@ itb_stream_encrypt(n, d, s, /* mac */ NULL,
                    write_cb, &ectx,
                    ITB_DEFAULT_CHUNK_SIZE);   /* chunk_size — must be > 0 */
 
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+uint8_t *outerKey = NULL; size_t outerKey_len = 0;
+itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                         &outerKey, &outerKey_len);
+
+/* Format-deniability ITB masking via outer-cipher streaming wrapper (AES-128-CTR) - same ~0% overhead in stream mode (Recommended in every case). */
+uint8_t nonce_buf[16] = {0};
+itb_wrap_stream_writer_t *ww = NULL;
+itb_wrap_stream_writer_new(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                           outerKey, outerKey_len,
+                           nonce_buf, sizeof nonce_buf, &ww);
+size_t nlen = 0;
+itb_wrapper_nonce_size(ITB_WRAPPER_CIPHER_AES_128_CTR, &nlen);
+
+/* Wrap the inner stream end-to-end through one keystream session. */
+itb_wrap_stream_writer_update(ww, ectx.sink, ectx.sink_len,
+                              ectx.sink, ectx.sink_cap);
+itb_wrap_stream_writer_free(ww);
+
+/* Receiver: strip nonce, unwrap body, feed to itb_stream_decrypt. */
+itb_unwrap_stream_reader_t *ur = NULL;
+itb_unwrap_stream_reader_new(ITB_WRAPPER_CIPHER_AES_128_CTR,
+                             outerKey, outerKey_len,
+                             nonce_buf, nlen, &ur);
+itb_unwrap_stream_reader_update(ur, ectx.sink, ectx.sink_len,
+                                ectx.sink, ectx.sink_cap);
+itb_unwrap_stream_reader_free(ur);
+
 /* Decrypt direction: feed `ectx.sink` back through, recover plaintext. */
 struct buf_ctx dctx = {
     .src = ectx.sink, .src_len = ectx.sink_len, .src_pos = 0,
@@ -796,6 +1052,7 @@ itb_stream_decrypt(n, d, s, NULL,
                    0);
 
 /* dctx.sink now holds the recovered plaintext. */
+itb_buffer_free(outerKey);
 free(ectx.sink);
 free(dctx.sink);
 itb_seed_free(s);

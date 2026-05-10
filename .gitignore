@@ -3,6 +3,7 @@ build/
 tests/build/
 bench/build/
 bench/results/
+bin/
 
 # Object files anywhere under the binding.
 *.o

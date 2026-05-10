@@ -137,4 +137,24 @@ struct itb_blob512 {
     uintptr_t handle;
 };
 
+/* ------------------------------------------------------------------ */
+/* Format-deniability wrapper streaming handles                        */
+/* ------------------------------------------------------------------ */
+/*
+ * Concrete wrap-stream-writer / unwrap-stream-reader structs. Both
+ * carry the libitb uintptr handle assigned by ITB_WrapStreamWriter_Init
+ * / ITB_UnwrapStreamReader_Init plus a `closed` flag that flips to 1
+ * once the wrapper has freed the libitb handle so a second free call
+ * is a no-op rather than an FFI fault.
+ */
+struct itb_wrap_stream_writer {
+    uintptr_t handle;
+    int       closed;
+};
+
+struct itb_unwrap_stream_reader {
+    uintptr_t handle;
+    int       closed;
+};
+
 #endif /* ITB_INTERNAL_H */

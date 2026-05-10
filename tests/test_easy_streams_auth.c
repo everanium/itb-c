@@ -302,6 +302,123 @@ START_TEST(test_easy_auth_stream_prefix_tamper)
 }
 END_TEST
 
+/*
+ * Regression: per-instance nonce_bits must drive the auth-stream
+ * decoder's chunk-length parse, not the process-global setting. The
+ * three tests below pin the contract that itb_encryptor_set_nonce_bits
+ * is honoured even when itb_set_nonce_bits is left at a divergent
+ * default. The third test is the pointed regression — it deliberately
+ * holds the global at 128 while flipping the encryptor to 512.
+ */
+
+static void run_paired_auth_roundtrip_nonce_bits(int nonce_bits, int mode,
+                                                   const char *mac_name)
+{
+    itb_encryptor_t *e = NULL;
+    ck_assert_int_eq(itb_encryptor_new("blake3", 1024, mac_name, mode, &e),
+                     ITB_OK);
+    ck_assert_int_eq(itb_encryptor_set_nonce_bits(e, nonce_bits), ITB_OK);
+
+    uint8_t *blob = NULL; size_t blob_len = 0;
+    ck_assert_int_eq(itb_encryptor_export(e, &blob, &blob_len), ITB_OK);
+    itb_encryptor_t *e2 = NULL;
+    ck_assert_int_eq(itb_encryptor_new("blake3", 1024, mac_name, mode, &e2),
+                     ITB_OK);
+    ck_assert_int_eq(itb_encryptor_set_nonce_bits(e2, nonce_bits), ITB_OK);
+    ck_assert_int_eq(itb_encryptor_import(e2, blob, blob_len), ITB_OK);
+    itb_buffer_free(blob);
+
+    /* ~96 KiB plaintext -> multi-chunk wire at SMALL_CHUNK = 4096. */
+    size_t pt_len = SMALL_CHUNK * 24 + 17;
+    uint8_t *pt = pseudo_payload(pt_len);
+    membuf_t in  = { pt, pt_len, pt_len, 0, 0 };
+    membuf_t out = { NULL, 0, 0, 0, 0 };
+    ck_assert_int_eq(itb_encryptor_stream_encrypt_auth(e,
+                        membuf_read, &in, membuf_write, &out,
+                        SMALL_CHUNK), ITB_OK);
+
+    membuf_t cin = { out.data, out.len, out.len, 0, 0 };
+    membuf_t recovered = { NULL, 0, 0, 0, 0 };
+    ck_assert_int_eq(itb_encryptor_stream_decrypt_auth(e2,
+                        membuf_read, &cin, membuf_write, &recovered,
+                        SMALL_CHUNK), ITB_OK);
+    ck_assert_uint_eq(recovered.len, pt_len);
+    ck_assert_mem_eq(recovered.data, pt, pt_len);
+
+    free(pt);
+    free(out.data);
+    free(recovered.data);
+    itb_encryptor_free(e);
+    itb_encryptor_free(e2);
+}
+
+START_TEST(test_easy_auth_roundtrip_non_default_nonce_single)
+{
+    static const int NONCE_BITS[] = { 256, 512 };
+    for (size_t i = 0; i < sizeof(NONCE_BITS) / sizeof(NONCE_BITS[0]); i++) {
+        run_paired_auth_roundtrip_nonce_bits(NONCE_BITS[i], 1, NULL);
+    }
+}
+END_TEST
+
+START_TEST(test_easy_auth_roundtrip_non_default_nonce_triple)
+{
+    static const int NONCE_BITS[] = { 256, 512 };
+    for (size_t i = 0; i < sizeof(NONCE_BITS) / sizeof(NONCE_BITS[0]); i++) {
+        run_paired_auth_roundtrip_nonce_bits(NONCE_BITS[i], 3, "kmac256");
+    }
+}
+END_TEST
+
+START_TEST(test_easy_auth_roundtrip_global_diverges_from_instance)
+{
+    /* Pin the process-global at 128 (the default). The per-instance
+     * value is then bumped to 512. Decryption must still succeed; if
+     * the auth-stream parser silently consults the global, chunk_len
+     * mismatches and the round-trip fails. */
+    ck_assert_int_eq(itb_set_nonce_bits(128), ITB_OK);
+    ck_assert_int_eq(itb_get_nonce_bits(), 128);
+
+    itb_encryptor_t *e = NULL;
+    ck_assert_int_eq(itb_encryptor_new("blake3", 1024, NULL, 1, &e), ITB_OK);
+    ck_assert_int_eq(itb_encryptor_set_nonce_bits(e, 512), ITB_OK);
+
+    uint8_t *blob = NULL; size_t blob_len = 0;
+    ck_assert_int_eq(itb_encryptor_export(e, &blob, &blob_len), ITB_OK);
+    itb_encryptor_t *e2 = NULL;
+    ck_assert_int_eq(itb_encryptor_new("blake3", 1024, NULL, 1, &e2), ITB_OK);
+    ck_assert_int_eq(itb_encryptor_set_nonce_bits(e2, 512), ITB_OK);
+    ck_assert_int_eq(itb_encryptor_import(e2, blob, blob_len), ITB_OK);
+    itb_buffer_free(blob);
+
+    /* Confirm the global is still 128 — the per-instance set must not
+     * have leaked into the global. */
+    ck_assert_int_eq(itb_get_nonce_bits(), 128);
+
+    size_t pt_len = SMALL_CHUNK * 24 + 17;
+    uint8_t *pt = pseudo_payload(pt_len);
+    membuf_t in  = { pt, pt_len, pt_len, 0, 0 };
+    membuf_t out = { NULL, 0, 0, 0, 0 };
+    ck_assert_int_eq(itb_encryptor_stream_encrypt_auth(e,
+                        membuf_read, &in, membuf_write, &out,
+                        SMALL_CHUNK), ITB_OK);
+
+    membuf_t cin = { out.data, out.len, out.len, 0, 0 };
+    membuf_t recovered = { NULL, 0, 0, 0, 0 };
+    ck_assert_int_eq(itb_encryptor_stream_decrypt_auth(e2,
+                        membuf_read, &cin, membuf_write, &recovered,
+                        SMALL_CHUNK), ITB_OK);
+    ck_assert_uint_eq(recovered.len, pt_len);
+    ck_assert_mem_eq(recovered.data, pt, pt_len);
+
+    free(pt);
+    free(out.data);
+    free(recovered.data);
+    itb_encryptor_free(e);
+    itb_encryptor_free(e2);
+}
+END_TEST
+
 int main(void)
 {
     Suite *s = suite_create("easy_streams_auth");
@@ -314,6 +431,9 @@ int main(void)
     tcase_add_test(tc, test_easy_auth_closed_encryptor_preflight);
     tcase_add_test(tc, test_easy_auth_chunk_size_zero_rejected);
     tcase_add_test(tc, test_easy_auth_stream_prefix_tamper);
+    tcase_add_test(tc, test_easy_auth_roundtrip_non_default_nonce_single);
+    tcase_add_test(tc, test_easy_auth_roundtrip_non_default_nonce_triple);
+    tcase_add_test(tc, test_easy_auth_roundtrip_global_diverges_from_instance);
     suite_add_tcase(s, tc);
 
     SRunner *sr = srunner_create(s);

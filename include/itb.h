@@ -1299,6 +1299,264 @@ itb_status_t itb_encryptor_stream_decrypt_auth(itb_encryptor_t *e,
                                                void *write_user_ctx,
                                                size_t chunk_size);
 
+/* ------------------------------------------------------------------ */
+/* Format-deniability wrapper                                          */
+/* ------------------------------------------------------------------ */
+/*
+ * Outer keystream-cipher envelope that hides the on-wire ITB byte
+ * pattern (per-chunk header / 32-byte streamID prefix / container
+ * layout) under one of three generic stream ciphers — AES-128-CTR,
+ * ChaCha20 (RFC8439), or SipHash-2-4 in CTR mode. Wire format is
+ * `nonce || keystream-XOR(bytestream)`, indistinguishable from any
+ * generic stream-cipher payload by surface pattern. ITB's content-
+ * deniability is unchanged; the AEAD path's integrity is unchanged.
+ * The wrap exists for **format-deniability ONLY** — adding a MAC at
+ * this layer would defeat the goal (the wire would pattern-match an
+ * AEAD construction's tag-bearing format, not a generic stream
+ * cipher).
+ *
+ * Two flavours of helpers, picked per use case:
+ *
+ *   1. itb_wrap / itb_unwrap (Single Message, allocation) — seals the
+ *      whole ITB ciphertext blob as one wrap. Suitable for any
+ *      single-message Encrypt / EncryptAuth output. Wire =
+ *      `nonce || keystream-XOR(blob)`.
+ *
+ *      itb_wrap_in_place / itb_unwrap_in_place are zero-allocation
+ *      variants that XOR the caller's blob / wire buffer in place.
+ *      Suitable for hot paths where the caller has just produced an
+ *      ITB ciphertext and will not re-read it.
+ *
+ *   2. itb_wrap_stream_writer_* / itb_unwrap_stream_reader_*
+ *      (streaming) — opens a stateful wrap session. The constructor
+ *      draws a fresh CSPRNG nonce and returns it via out_nonce so the
+ *      caller can emit it once at stream start (typically as the wire
+ *      prefix). Subsequent _update calls XOR caller bytes through the
+ *      keystream; the keystream counter advances monotonically across
+ *      every byte fed into the session. Suitable for the
+ *      Streaming AEAD IO-Driven flow (the entire bytestream emitted
+ *      by ITB's stream encoder gets wrapped end-to-end) and for the
+ *      User-Driven Loop (caller-side framing — e.g. per-chunk u32_LE
+ *      length prefixes — is also written through the wrap session so
+ *      the framing bytes pass through the keystream XOR alongside the
+ *      ITB ciphertext bodies).
+ *
+ * Outer-cipher key sizes (16 / 32 / 16 bytes) and nonce sizes (16 /
+ * 12 / 16 bytes) match the libitb wrapper Go-side wrapper.KeySize
+ * and wrapper.NonceSize. The outer key MAY be reused across many
+ * streams provided each stream uses a fresh CSPRNG nonce — this is
+ * the standard CTR mode safety contract; the helpers always generate
+ * a fresh nonce internally, so caller-side discipline is reduced to
+ * "do not reuse the same (key, nonce) across distinct streams".
+ *
+ * Threading. The Single Message itb_wrap / itb_unwrap / itb_wrap_in_place
+ * / itb_unwrap_in_place are thread-safe: each call constructs an
+ * outer cipher session of its own and the libitb keystream
+ * constructor draws a fresh CSPRNG nonce per call. The streaming
+ * itb_wrap_stream_writer_t / itb_unwrap_stream_reader_t handles are
+ * single-feeder — every _update call advances the underlying
+ * keystream counter; concurrent _update calls on the same handle
+ * race. Distinct handles run independently.
+ */
+
+/*
+ * Outer cipher selector. Use the named enum constants in caller code
+ * — direct integer comparisons against the enum value are part of the
+ * stable ABI surface (the order matches wrapper.CipherNames in the
+ * Go-side wrapper package).
+ */
+typedef enum itb_wrapper_cipher {
+    ITB_WRAPPER_CIPHER_AES_128_CTR = 0,
+    ITB_WRAPPER_CIPHER_CHACHA20    = 1,
+    ITB_WRAPPER_CIPHER_SIPHASH24   = 2
+} itb_wrapper_cipher_t;
+
+/*
+ * Returns the canonical short name of the named outer cipher ("aes" /
+ * "chacha" / "siphash") as an interned NUL-terminated C string. The
+ * pointer is owned by libitb_c and stays valid for the lifetime of the
+ * process; callers MUST NOT free it. Returns NULL for any value not in
+ * itb_wrapper_cipher_t.
+ */
+const char *itb_wrapper_cipher_name(itb_wrapper_cipher_t cipher);
+
+/*
+ * Returns the byte length of the keystream-cipher key for the named
+ * outer cipher via *out_size: 16 for AES-128-CTR / SipHash-CTR; 32
+ * for ChaCha20. Returns ITB_BAD_INPUT for an unknown cipher value.
+ */
+itb_status_t itb_wrapper_key_size(itb_wrapper_cipher_t cipher,
+                                  size_t *out_size);
+
+/*
+ * Returns the on-wire nonce length the named outer cipher emits per
+ * stream via *out_size: 16 for AES-128-CTR / SipHash-CTR; 12 for
+ * ChaCha20. Returns ITB_BAD_INPUT for an unknown cipher value.
+ */
+itb_status_t itb_wrapper_nonce_size(itb_wrapper_cipher_t cipher,
+                                    size_t *out_size);
+
+/*
+ * Generates a fresh CSPRNG outer cipher key of the size required by
+ * `cipher` (via itb_wrapper_key_size). On success, *out_key receives
+ * a freshly malloc'd buffer the caller releases via itb_buffer_free();
+ * *out_key_len receives the byte length. On failure *out_key is NULL
+ * and *out_key_len is 0; itb_last_error() carries the diagnostic.
+ *
+ * Uses the system CSPRNG (getrandom(2) on Linux, the equivalent on
+ * other platforms — every supported host has a usable CSPRNG by
+ * standard practice). Falls back to ITB_INTERNAL on a CSPRNG read
+ * failure (very rare; signals a misconfigured kernel).
+ */
+itb_status_t itb_wrapper_generate_key(itb_wrapper_cipher_t cipher,
+                                      uint8_t **out_key, size_t *out_key_len);
+
+/*
+ * Single Message wrap. Seals `blob` under `cipher` with a fresh per-call
+ * CSPRNG nonce; *out_wire receives a freshly malloc'd buffer holding
+ * `nonce || keystream-XOR(blob)`. Caller releases via itb_buffer_free().
+ *
+ * Required out capacity is itb_wrapper_nonce_size(cipher) + blob_len;
+ * the wrapper handles the allocation. Empty blob is permitted —
+ * the wire becomes `nonce` alone (length-checked on the Go side).
+ */
+itb_status_t itb_wrap(itb_wrapper_cipher_t cipher,
+                      const uint8_t *key, size_t key_len,
+                      const uint8_t *blob, size_t blob_len,
+                      uint8_t **out_wire, size_t *out_wire_len);
+
+/*
+ * Single Message unwrap. Reads the leading itb_wrapper_nonce_size(cipher)
+ * bytes of `wire` as the per-stream nonce, XOR-decrypts the remainder
+ * under (key, nonce). *out_blob receives a freshly malloc'd buffer
+ * holding the recovered blob; caller releases via itb_buffer_free().
+ * Returns ITB_BAD_INPUT when wire_len < nonce_size.
+ */
+itb_status_t itb_unwrap(itb_wrapper_cipher_t cipher,
+                        const uint8_t *key, size_t key_len,
+                        const uint8_t *wire, size_t wire_len,
+                        uint8_t **out_blob, size_t *out_blob_len);
+
+/*
+ * In-place Single Message wrap. XORs `blob` under a freshly drawn per-
+ * call CSPRNG nonce; the caller-supplied `out_nonce` buffer (capacity
+ * `nonce_cap`) receives the nonce bytes. The caller then emits
+ * `nonce || mutated-blob` to the wire (or composes a single buffer).
+ *
+ * `blob` is **MUTATED** in place. Use itb_wrap when the caller's
+ * plaintext must be preserved.
+ *
+ * `nonce_cap` must be >= itb_wrapper_nonce_size(cipher) — pass exactly
+ * that size for the typical case. Returns ITB_BAD_INPUT when the
+ * nonce buffer is too small.
+ */
+itb_status_t itb_wrap_in_place(itb_wrapper_cipher_t cipher,
+                               const uint8_t *key, size_t key_len,
+                               uint8_t *blob, size_t blob_len,
+                               uint8_t *out_nonce, size_t nonce_cap);
+
+/*
+ * In-place Single Message unwrap. Strips the leading
+ * itb_wrapper_nonce_size(cipher) bytes from `wire` and XOR-decrypts
+ * the remainder in place. The decrypted body occupies
+ * `wire[nonce_size .. wire_len)`; the leading nonce prefix is left
+ * unchanged. `wire` is **MUTATED** in place.
+ *
+ * Returns ITB_BAD_INPUT when wire_len < nonce_size.
+ */
+itb_status_t itb_unwrap_in_place(itb_wrapper_cipher_t cipher,
+                                 const uint8_t *key, size_t key_len,
+                                 uint8_t *wire, size_t wire_len);
+
+/*
+ * Forward-declared opaque wrap-stream-writer handle. Concrete layout
+ * lives in src/internal.h.
+ */
+typedef struct itb_wrap_stream_writer itb_wrap_stream_writer_t;
+
+/*
+ * Forward-declared opaque unwrap-stream-reader handle. Concrete layout
+ * lives in src/internal.h.
+ */
+typedef struct itb_unwrap_stream_reader itb_unwrap_stream_reader_t;
+
+/*
+ * Allocates a fresh streaming wrap-encrypt handle. Draws a CSPRNG
+ * nonce, opens a libitb wrap-stream session keyed by (cipher, key,
+ * nonce), and writes the nonce bytes into `out_nonce` (capacity
+ * `nonce_cap` >= itb_wrapper_nonce_size(cipher)).
+ *
+ * The caller emits the nonce once at stream start (typically as the
+ * wire prefix) so the matching itb_unwrap_stream_reader_t can be
+ * constructed against it. Subsequent itb_wrap_stream_writer_update
+ * calls XOR caller plaintext through the keystream; the counter
+ * advances monotonically across calls.
+ *
+ * Pair every successful itb_wrap_stream_writer_new with exactly one
+ * itb_wrap_stream_writer_free call. On failure *out_w is NULL and a
+ * non-OK status is returned.
+ */
+itb_status_t itb_wrap_stream_writer_new(itb_wrapper_cipher_t cipher,
+                                        const uint8_t *key, size_t key_len,
+                                        uint8_t *out_nonce, size_t nonce_cap,
+                                        itb_wrap_stream_writer_t **out_w);
+
+/*
+ * XOR-encrypts `src[0..src_len)` into `dst[0..src_len)` under the
+ * handle's keystream. `dst` MAY equal `src` (in-place mutation);
+ * `dst_cap` must be >= src_len. Empty input (src_len == 0) is a
+ * no-op and returns ITB_OK.
+ *
+ * Returns ITB_BAD_HANDLE when called after itb_wrap_stream_writer_free.
+ */
+itb_status_t itb_wrap_stream_writer_update(itb_wrap_stream_writer_t *w,
+                                           const uint8_t *src, size_t src_len,
+                                           uint8_t *dst, size_t dst_cap);
+
+/*
+ * Releases the wrap-encrypt streaming handle. NULL is accepted (no-op).
+ * Idempotent — repeated free calls return without reaching libitb.
+ */
+void itb_wrap_stream_writer_free(itb_wrap_stream_writer_t *w);
+
+/*
+ * Allocates a fresh streaming unwrap-decrypt handle. Opens a libitb
+ * wrap-stream session keyed by (cipher, key, wire_nonce); subsequent
+ * itb_unwrap_stream_reader_update calls XOR caller wire bytes back
+ * to plaintext under the keystream advancing from counter zero.
+ *
+ * `wire_nonce` is the per-stream nonce read off the wire (typically
+ * the leading itb_wrapper_nonce_size(cipher) bytes). `nonce_len` must
+ * equal that value or ITB_BAD_INPUT is returned.
+ *
+ * Pair every successful itb_unwrap_stream_reader_new with exactly one
+ * itb_unwrap_stream_reader_free call. On failure *out_r is NULL.
+ */
+itb_status_t itb_unwrap_stream_reader_new(itb_wrapper_cipher_t cipher,
+                                          const uint8_t *key, size_t key_len,
+                                          const uint8_t *wire_nonce,
+                                          size_t nonce_len,
+                                          itb_unwrap_stream_reader_t **out_r);
+
+/*
+ * XOR-decrypts `src[0..src_len)` into `dst[0..src_len)` under the
+ * handle's keystream. `dst` MAY equal `src` (in-place mutation);
+ * `dst_cap` must be >= src_len. Empty input (src_len == 0) is a
+ * no-op and returns ITB_OK.
+ *
+ * Returns ITB_BAD_HANDLE when called after itb_unwrap_stream_reader_free.
+ */
+itb_status_t itb_unwrap_stream_reader_update(itb_unwrap_stream_reader_t *r,
+                                             const uint8_t *src, size_t src_len,
+                                             uint8_t *dst, size_t dst_cap);
+
+/*
+ * Releases the unwrap-decrypt streaming handle. NULL is accepted
+ * (no-op). Idempotent — repeated free calls return without reaching
+ * libitb.
+ */
+void itb_unwrap_stream_reader_free(itb_unwrap_stream_reader_t *r);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

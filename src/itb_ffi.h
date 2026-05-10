@@ -277,6 +277,48 @@ extern int ITB_Easy_DecryptStreamAuth(
     uint8_t *stream_id, uint64_t cumulative_pixel_offset,
     void *out, size_t out_cap, size_t *out_len, int *final_flag_out);
 
+/* ---- Format-deniability wrapper (Phase 7) ------------------------- */
+/*
+ * 12 raw libitb exports that back the public-facing itb_wrap* /
+ * itb_unwrap* / itb_wrap_stream_writer_* / itb_unwrap_stream_reader_*
+ * surface declared in itb.h. The cipherName argument is a UTF-8
+ * NUL-terminated string ("aes" / "chacha" / "siphash"); see
+ * `wrapper/wrapper.go` for the source-of-truth construction.
+ */
+extern int ITB_WrapperKeySize(char *cipher_name, size_t *out_size);
+extern int ITB_WrapperNonceSize(char *cipher_name, size_t *out_size);
+extern int ITB_Wrap(char *cipher_name,
+                    void *key, size_t key_len,
+                    void *blob, size_t blob_len,
+                    void *out, size_t out_cap, size_t *out_len);
+extern int ITB_Unwrap(char *cipher_name,
+                      void *key, size_t key_len,
+                      void *wire, size_t wire_len,
+                      void *out, size_t out_cap, size_t *out_len);
+extern int ITB_WrapInPlace(char *cipher_name,
+                           void *key, size_t key_len,
+                           void *blob, size_t blob_len,
+                           void *out_nonce, size_t nonce_cap);
+extern int ITB_UnwrapInPlace(char *cipher_name,
+                             void *key, size_t key_len,
+                             void *wire, size_t wire_len);
+extern int ITB_WrapStreamWriter_Init(char *cipher_name,
+                                     void *key, size_t key_len,
+                                     void *out_nonce, size_t nonce_cap,
+                                     uintptr_t *out_handle);
+extern int ITB_WrapStreamWriter_Update(uintptr_t handle,
+                                       void *src, size_t src_len,
+                                       void *dst, size_t dst_cap);
+extern int ITB_WrapStreamWriter_Free(uintptr_t handle);
+extern int ITB_UnwrapStreamReader_Init(char *cipher_name,
+                                       void *key, size_t key_len,
+                                       void *wire_nonce, size_t nonce_len,
+                                       uintptr_t *out_handle);
+extern int ITB_UnwrapStreamReader_Update(uintptr_t handle,
+                                         void *src, size_t src_len,
+                                         void *dst, size_t dst_cap);
+extern int ITB_UnwrapStreamReader_Free(uintptr_t handle);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
