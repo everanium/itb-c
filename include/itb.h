@@ -259,6 +259,23 @@ int          itb_get_nonce_bits(void);
 itb_status_t itb_set_barrier_fill(int n);
 int          itb_get_barrier_fill(void);
 
+/**
+ * Configures the Go runtime's heap-size soft limit (bytes). Pass -1
+ * (or any negative value) to query the current limit without changing
+ * it; the previous limit is returned. Setter calls override any
+ * ITB_GOMEMLIMIT env var set at libitb load time.
+ */
+int64_t itb_set_memory_limit(int64_t limit);
+
+/**
+ * Configures the Go runtime's GC trigger percentage. The default is
+ * 100 (GC fires at +100% heap growth); lower values trigger GC more
+ * aggressively. Pass -1 (or any negative value) to query the current
+ * value without changing it; the previous value is returned. Setter
+ * calls override any ITB_GOGC env var set at libitb load time.
+ */
+int itb_set_gc_percent(int pct);
+
 /* ------------------------------------------------------------------ */
 /* Seed                                                                */
 /* ------------------------------------------------------------------ */

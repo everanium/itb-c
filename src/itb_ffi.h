@@ -93,6 +93,8 @@ extern int ITB_SetNonceBits(int n);
 extern int ITB_GetNonceBits(void);
 extern int ITB_SetBarrierFill(int n);
 extern int ITB_GetBarrierFill(void);
+extern int64_t ITB_SetMemoryLimit(int64_t limit);
+extern int     ITB_SetGCPercent(int pct);
 
 extern int ITB_ParseChunkLen(void *header, size_t header_len, size_t *out_chunk_len);
 extern int ITB_MaxKeyBits(void);

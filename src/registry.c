@@ -125,3 +125,25 @@ int itb_get_lock_soup(void)    { return ITB_GetLockSoup();    }
 int itb_get_max_workers(void)  { return ITB_GetMaxWorkers();  }
 int itb_get_nonce_bits(void)   { return ITB_GetNonceBits();   }
 int itb_get_barrier_fill(void) { return ITB_GetBarrierFill(); }
+
+/* ------------------------------------------------------------------ */
+/* Go-runtime knobs                                                    */
+/* ------------------------------------------------------------------ */
+/*
+ * Pass-through wrappers around the Go runtime's heap-size soft limit
+ * and GC trigger percentage. Both follow the set-and-return-previous
+ * convention: a negative argument queries the current value without
+ * changing it, and the previous value is always returned. Failure is
+ * not propagated through itb_last_error() because the underlying Go
+ * runtime calls do not signal structured errors.
+ */
+
+int64_t itb_set_memory_limit(int64_t limit)
+{
+    return ITB_SetMemoryLimit(limit);
+}
+
+int itb_set_gc_percent(int pct)
+{
+    return ITB_SetGCPercent(pct);
+}

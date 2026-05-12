@@ -78,10 +78,36 @@ The header is C++-aware (`extern "C"` block guarded by
 `__cplusplus`), so the same archive serves C and C++ consumers without
 a separate wrapper.
 
-## Run the integration test suite
+## Library lookup order
+
+1. `LD_LIBRARY_PATH` resolved at process startup. The test runner
+   inherits the embedded RPATH and does not export it.
+2. The `rpath` baked into the produced binary at link time
+   (`-Wl,-rpath,../../dist/linux-amd64`). Installed binaries find
+   `libitb` without `LD_LIBRARY_PATH`.
+3. System loader path (`ld.so.cache`, `DYLD_LIBRARY_PATH`, `PATH`).
+
+## Memory
+
+Two process-wide knobs constrain Go runtime arena pacing. Both readable at libitb load time via env vars:
+
+- `ITB_GOMEMLIMIT=512MiB` — soft memory limit in bytes; supports `B` / `KiB` / `MiB` / `GiB` / `TiB` suffixes.
+- `ITB_GOGC=20` — GC trigger percentage; default `100`, lower triggers GC more aggressively.
+
+Programmatic setters override env-set values at any time. Pass `-1` to either setter to query the current value without changing it.
+
+```c
+itb_set_memory_limit(512LL << 20);
+itb_set_gc_percent(20);
+```
+
+## Tests
 
 ```bash
-./bindings/c/run_tests.sh
+cd bindings/c
+make tests        # compile every test binary
+make test         # compile + run via ./run_tests.sh
+./run_tests.sh
 ```
 
 The harness compiles every `tests/test_*.c` to its own standalone
@@ -98,14 +124,30 @@ Override the compiler via the `CC` environment variable:
 CC=clang ./bindings/c/run_tests.sh
 ```
 
-## Library lookup order
+Each test file is compiled to its own standalone executable under
+`tests/build/` and linked against `build/libitb_c.a` plus `libitb.so`
+plus the system [Check](https://libcheck.github.io/check/) unit-testing
+framework. Per-process isolation gives every test a fresh libitb global
+state.
 
-1. `LD_LIBRARY_PATH` resolved at process startup. The test runner
-   inherits the embedded RPATH and does not export it.
-2. The `rpath` baked into the produced binary at link time
-   (`-Wl,-rpath,../../dist/linux-amd64`). Installed binaries find
-   `libitb` without `LD_LIBRARY_PATH`.
-3. System loader path (`ld.so.cache`, `DYLD_LIBRARY_PATH`, `PATH`).
+## Benchmarks
+
+A custom Go-bench-style harness lives under `bench/` and covers the
+four ops (`encrypt`, `decrypt`, `encrypt_auth`, `decrypt_auth`) across
+the nine PRF-grade primitives plus one mixed-primitive variant for
+both Single and Triple Ouroboros at 1024-bit ITB key width and 16 MiB
+payload. See [`bench/README.md`](bench/README.md) for invocation /
+environment variables / output format and [`bench/BENCH.md`](bench/BENCH.md)
+for recorded throughput results across the canonical pass matrix.
+
+The four-pass canonical sweep that fills `bench/BENCH.md` is driven by
+the wrapper script in the binding root:
+
+```bash
+cd bindings/c
+make bench
+./run_bench.sh                  # full 4-pass canonical sweep
+```
 
 ## Streaming AEAD
 
@@ -174,7 +216,7 @@ static int mread_read(void *ctx, void *buf, size_t cap, size_t *out_n) {
 itb_encryptor_t *enc = NULL;
 itb_encryptor_new("areion512", 1024, "hmac-blake3", 1, &enc);
 
-/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB Inner seeds + PRF key keep as CSPRNG derived. */
 uint8_t *outerKey = NULL; size_t outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
@@ -276,7 +318,7 @@ itb_seed_new("areion512", 1024, &data);
 itb_seed_new("areion512", 1024, &start);
 itb_mac_new ("hmac-blake3", mac_key, sizeof mac_key, &mac);
 
-/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB Inner seeds + PRF key keep as CSPRNG derived. */
 uint8_t *outerKey = NULL; size_t outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
@@ -418,7 +460,7 @@ itb_encryptor_encrypt_auth(enc, plaintext, plaintext_len,
                            &encrypted, &encrypted_len);
 printf("encrypted: %zu bytes\n", encrypted_len);
 
-/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB Inner seeds + PRF key keep as CSPRNG derived. */
 uint8_t *outerKey = NULL;
 size_t   outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
@@ -619,7 +661,7 @@ size_t   encrypted_len = 0;
 itb_encryptor_encrypt_auth(enc, plaintext, strlen(plaintext),
                            &encrypted, &encrypted_len);
 
-/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB Inner seeds + PRF key keep as CSPRNG derived. */
 uint8_t *outerKey = NULL;
 size_t   outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
@@ -701,7 +743,7 @@ size_t   encrypted_len = 0;
 itb_encryptor_encrypt_auth(enc, plaintext, strlen(plaintext),
                            &encrypted, &encrypted_len);
 
-/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB Inner seeds + PRF key keep as CSPRNG derived. */
 uint8_t *outerKey = NULL;
 size_t   outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
@@ -814,7 +856,7 @@ itb_encrypt_auth(ns, ds, ss, mac, plaintext, strlen(plaintext),
                  &encrypted, &encrypted_len);
 printf("encrypted: %zu bytes\n", encrypted_len);
 
-/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB Inner seeds + PRF key keep as CSPRNG derived. */
 uint8_t *outerKey = NULL;
 size_t   outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
@@ -1013,7 +1055,7 @@ itb_stream_encrypt(n, d, s, /* mac */ NULL,
                    write_cb, &ectx,
                    ITB_DEFAULT_CHUNK_SIZE);   /* chunk_size — must be > 0 */
 
-/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB inner PRF + seeds keep CSPRNG-fresh randomness per call. */
+/* Outer cipher key - preferred surface for HKDF / ML-KEM / key-rotation policy in user-side application. ITB Inner seeds + PRF key keep as CSPRNG derived. */
 uint8_t *outerKey = NULL; size_t outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
@@ -1137,6 +1179,18 @@ authenticated counterparts `itb_encrypt_auth_triple` /
 
 All seeds passed to one encrypt / decrypt call must share the same
 native hash width. Mixing widths surfaces `ITB_SEED_WIDTH_MIX`.
+
+## MAC primitives
+
+Names match the libitb MAC registry; ordering matches that registry's declaration order.
+
+| MAC | Key bytes | Tag bytes | Underlying primitive |
+|---|---|---|---|
+| `kmac256` | 32 | 32 | KMAC256 (Keccak-derived) |
+| `hmac-sha256` | 32 | 32 | HMAC over SHA-256 |
+| `hmac-blake3` | 32 | 32 | HMAC over BLAKE3 |
+
+`kmac256` and `hmac-sha256` accept keys 16 bytes and longer; the binding fleet's tests and examples use 32 bytes uniformly across primitives for cross-binding consistency. `hmac-blake3` requires exactly 32 bytes by construction.
 
 ## Process-wide configuration
 
@@ -1279,58 +1333,6 @@ bit-identically.
 | `ITB_STREAM_AFTER_FINAL` | 24 | Streaming AEAD transcript carries chunk bytes after the terminator; surfaced by the binding's stream loop helpers |
 | `ITB_INTERNAL` | 99 | Generic "internal" sentinel for paths the caller cannot recover from at the binding layer |
 
-## Tests
-
-`./run_tests.sh` builds and runs every `tests/test_*.c` file. The 30
-test files mirror the cross-binding coverage:
-
-```
-test_aescmac          test_easy_aescmac        test_easy_streams
-test_areion           test_easy_areion         test_nonce_sizes
-test_attach_lock_seed test_easy_auth           test_persistence
-test_auth             test_easy_blake2b        test_roundtrip
-test_blake2b          test_easy_blake2s        test_siphash24
-test_blake2s          test_easy_blake3         test_streams
-test_blake3           test_easy.c              test_streams_nonce
-test_blob             test_easy_chacha20
-test_chacha20         test_easy_mixed
-test_config           test_easy_nonce_sizes
-                      test_easy_persistence
-                      test_easy_roundtrip
-                      test_easy_siphash24
-```
-
-Each test file is compiled to its own standalone executable under
-`tests/build/` and linked against `build/libitb_c.a` plus `libitb.so`
-plus the system [Check](https://libcheck.github.io/check/) unit-testing
-framework. Per-process isolation gives every test a fresh libitb global
-state.
-
-Equivalent Make targets:
-
-```bash
-make tests        # compile every test binary
-make test         # compile + run via ./run_tests.sh
-```
-
-## Benchmarks
-
-A custom Go-bench-style harness lives under `bench/` and covers the
-four ops (`encrypt`, `decrypt`, `encrypt_auth`, `decrypt_auth`) across
-the nine PRF-grade primitives plus one mixed-primitive variant for
-both Single and Triple Ouroboros at 1024-bit ITB key width and 16 MiB
-payload. See [`bench/README.md`](bench/README.md) for invocation /
-environment variables / output format and [`bench/BENCH.md`](bench/BENCH.md)
-for recorded throughput results across the canonical pass matrix.
-
-The four-pass canonical sweep that fills `bench/BENCH.md` is driven by
-the wrapper script in the binding root:
-
-```bash
-make bench
-./run_bench.sh                  # full 4-pass canonical sweep
-```
-
 ## Constraints
 
 - **C17 minimum.** The header uses `_Static_assert`-free declarations
@@ -1356,3 +1358,128 @@ make bench
 - **No `dlopen`.** Symbols are bound at link time. Consumers wanting
   runtime FFI loading (different `libitb.so` per environment) can wrap
   this binding's static archive in their own `dlopen` shim.
+
+## API Overview
+
+All public declarations live in `include/itb.h`. The surface is
+organised by concern below; every function returns `itb_status_t`
+(typedef'd integer status code) or a small fixed-width primitive type.
+Output strings follow a uniform `(char *out, size_t cap, size_t *out_len)`
+probe-then-fill convention.
+
+### Library metadata
+
+| Function | Purpose |
+|---|---|
+| `itb_status_t itb_version(char *out, size_t cap, size_t *out_len)` | Version string `"<major>.<minor>.<patch>"` |
+| `int itb_max_key_bits(void)` | Max supported ITB key width in bits |
+| `int itb_channels(void)` | Number of native channel slots |
+| `int itb_header_size(void)` | Current chunk header size (tracks `itb_set_nonce_bits`) |
+| `itb_status_t itb_parse_chunk_len(const void *header, size_t header_len, size_t *out_total)` | Parse chunk header, return total on-wire chunk length |
+| `int itb_hash_count(void)` / `itb_status_t itb_hash_name(int i, ...)` / `int itb_hash_width(int i)` | Hash catalogue accessors |
+| `int itb_mac_count(void)` / `itb_status_t itb_mac_name(int i, ...)` / `int itb_mac_key_size(int i)` / `int itb_mac_tag_size(int i)` / `int itb_mac_min_key_bytes(int i)` | MAC catalogue accessors |
+| `itb_status_t itb_last_status(void)` | Per-thread last status code |
+
+### Process-wide configuration
+
+| Function | Purpose |
+|---|---|
+| `itb_status_t itb_set_bit_soup(int mode)` / `int itb_get_bit_soup(void)` | Bit Soup mode toggle |
+| `itb_status_t itb_set_lock_soup(int mode)` / `int itb_get_lock_soup(void)` | Lock Soup mode toggle |
+| `itb_status_t itb_set_max_workers(int n)` / `int itb_get_max_workers(void)` | Worker pool size cap |
+| `itb_status_t itb_set_nonce_bits(int n)` / `int itb_get_nonce_bits(void)` | Nonce width (128 / 256 / 512) |
+| `itb_status_t itb_set_barrier_fill(int n)` / `int itb_get_barrier_fill(void)` | Barrier-fill factor (1, 2, 4, 8, 16, 32) |
+| `int64_t itb_set_memory_limit(int64_t limit)` | Go runtime heap soft limit; negative = query only |
+| `int itb_set_gc_percent(int pct)` | Go GC trigger percentage; negative = query only |
+
+### Seeds (`itb_seed_t`)
+
+| Function | Purpose |
+|---|---|
+| `itb_status_t itb_seed_new(const char *hash_name, int key_bits, itb_seed_t **out)` | CSPRNG-fresh seed |
+| `itb_status_t itb_seed_from_components(...)` | Reconstruct seed from explicit components |
+| `void itb_seed_free(itb_seed_t *s)` | Release seed handle |
+| `itb_status_t itb_seed_width(const itb_seed_t *s, int *out_width)` | Native digest width |
+| `itb_status_t itb_seed_hash_name(...)` / `itb_seed_hash_key(...)` / `itb_seed_components(...)` | Introspection accessors |
+| `itb_status_t itb_seed_attach_lock_seed(itb_seed_t *noise, const itb_seed_t *lock)` | Bind a lock seed onto a noise seed |
+
+### MAC handles (`itb_mac_t`)
+
+| Function | Purpose |
+|---|---|
+| `itb_status_t itb_mac_new(const char *mac_name, const uint8_t *key, size_t key_len, itb_mac_t **out)` | Construct MAC handle |
+| `void itb_mac_free(itb_mac_t *m)` | Release MAC handle |
+
+### Low-level cipher (free functions)
+
+| Function | Purpose |
+|---|---|
+| `itb_status_t itb_encrypt(noise, data, start, plaintext, ..., out)` | Single Message encrypt |
+| `itb_status_t itb_decrypt(noise, data, start, ciphertext, ..., out)` | Single Message decrypt |
+| `itb_status_t itb_encrypt_auth(noise, data, start, mac, ...)` / `itb_decrypt_auth(...)` | MAC-authenticated counterparts |
+| `itb_status_t itb_encrypt_triple(noise, d1, d2, d3, s1, s2, s3, ...)` / `itb_decrypt_triple(...)` | Triple Ouroboros (7 seeds) |
+| `itb_status_t itb_encrypt_auth_triple(...)` / `itb_decrypt_auth_triple(...)` | Triple Ouroboros MAC-authenticated |
+| `void itb_buffer_free(uint8_t *buf)` | Free output buffer allocated by an encrypt / decrypt call |
+
+### Easy Mode encryptor (`itb_encryptor_t`)
+
+| Function | Purpose |
+|---|---|
+| `itb_status_t itb_encryptor_new(const char *primitive, int key_bits, const char *mac, const char *mode, itb_encryptor_t **out)` | Single-primitive constructor |
+| `itb_status_t itb_encryptor_new_mixed(...)` / `itb_encryptor_new_mixed3(...)` | Mixed-primitive Single / Triple constructors |
+| `itb_status_t itb_encryptor_encrypt(...)` / `itb_encryptor_decrypt(...)` | Cipher entry points |
+| `itb_status_t itb_encryptor_encrypt_auth(...)` / `itb_encryptor_decrypt_auth(...)` | MAC-authenticated cipher entry points |
+| `itb_status_t itb_encryptor_set_nonce_bits / _barrier_fill / _bit_soup / _lock_soup / _lock_seed / _chunk_size (e, n)` | Per-instance overrides |
+| `itb_status_t itb_encryptor_primitive / _mac_name / _primitive_at / _key_bits / _mode / _seed_count / _nonce_bits / _header_size / _has_prf_keys / _is_mixed (...)` | Configuration accessors |
+| `itb_status_t itb_encryptor_parse_chunk_len(...)` | Per-instance chunk-length parser |
+| `itb_status_t itb_encryptor_prf_key(e, slot, ...)` / `itb_encryptor_mac_key(e, ...)` / `itb_encryptor_seed_components(...)` | Key-material accessors |
+| `itb_status_t itb_encryptor_export(...)` / `itb_encryptor_import(e, blob, blob_len)` | State-blob persistence |
+| `itb_status_t itb_easy_peek_config(...)` / `itb_easy_last_mismatch_field(...)` | Pre-import discriminator + mismatch field name |
+| `itb_status_t itb_encryptor_close(itb_encryptor_t *e)` / `void itb_encryptor_free(itb_encryptor_t *e)` | Close + release |
+
+### Streaming AEAD (free-function bridges and per-encryptor variants)
+
+| Function | Purpose |
+|---|---|
+| `itb_status_t itb_stream_encrypt / _decrypt (seeds, callbacks, ...)` | Single-primitive Low-Level stream (No MAC) |
+| `itb_status_t itb_stream_encrypt_triple / _decrypt_triple (...)` | Triple Low-Level stream (No MAC) |
+| `itb_status_t itb_stream_encrypt_auth / _decrypt_auth (seeds, mac, ...)` | Single Low-Level Streaming AEAD |
+| `itb_status_t itb_stream_encrypt_auth_triple / _decrypt_auth_triple (...)` | Triple Low-Level Streaming AEAD |
+| `itb_status_t itb_encryptor_stream_encrypt_auth(e, ...)` / `itb_encryptor_stream_decrypt_auth(e, ...)` | Easy Mode Streaming AEAD |
+| `typedef int (*itb_stream_read_fn)(...)` / `typedef int (*itb_stream_write_fn)(...)` | User-supplied IO callbacks |
+
+### Native Blob (`itb_blob128_t` / `itb_blob256_t` / `itb_blob512_t`)
+
+The three blob types are declared uniformly through the
+`ITB_DECLARE_BLOB_API(width, ...)` macro family. Per width the surface
+covers: `itb_blob<width>_new` / `_free`, `_set_key` / `_set_components`
+/ `_set_mac_key` / `_set_mac_name`, the matching `_get_*` introspection
+accessors, `_export` / `_export_triple` / `_import` / `_import_triple`,
+and `_width` / `_mode`.
+
+### Wrapper (format-deniability outer cipher)
+
+| Function | Purpose |
+|---|---|
+| `itb_status_t itb_wrapper_key_size(itb_wrapper_cipher_t cipher, size_t *out)` | Key size in bytes for a given cipher |
+| `itb_status_t itb_wrapper_nonce_size(itb_wrapper_cipher_t cipher, size_t *out)` | Wire nonce size in bytes |
+| `itb_status_t itb_wrapper_generate_key(itb_wrapper_cipher_t cipher, uint8_t *out, size_t out_cap)` | CSPRNG-fresh wrapper key |
+| `itb_status_t itb_wrap(cipher, key, blob, ...)` / `itb_unwrap(cipher, key, wire, ...)` | Single Message Wrap / Unwrap |
+| `itb_status_t itb_wrap_in_place(cipher, key, buf, ...)` / `itb_unwrap_in_place(...)` | In-place Wrap / Unwrap |
+| `itb_status_t itb_wrap_stream_writer_new(cipher, key, itb_wrap_stream_writer_t **out)` | Open a streaming wrap writer |
+| `itb_status_t itb_wrap_stream_writer_update(w, src, src_len, out, out_cap, ...)` / `void itb_wrap_stream_writer_free(w)` | Streaming wrap update / close |
+| `itb_status_t itb_unwrap_stream_reader_new(cipher, key, wire_nonce, ...)` / `..._update(...)` / `void ..._free(r)` | Streaming unwrap reader |
+
+The wrapper cipher enum (`itb_wrapper_cipher_t`) covers
+`ITB_WRAPPER_CIPHER_AES_128_CTR`, `ITB_WRAPPER_CIPHER_CHACHA20`, and
+`ITB_WRAPPER_CIPHER_SIPHASH24`.
+
+### Error handling
+
+| Symbol | Purpose |
+|---|---|
+| `typedef enum itb_status` | 24 named status codes plus `ITB_STATUS_INTERNAL` (99) |
+| `itb_status_t itb_last_status(void)` | Per-thread last-error retrieval |
+
+Hash names are sourced from `itb_hash_*`; MAC names (`kmac256`,
+`hmac-sha256`, `hmac-blake3`) from `itb_mac_*`.
