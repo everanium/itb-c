@@ -1,7 +1,7 @@
 /*
  * eitb.c — wrapper × ITB matrix runner for the C binding.
  *
- * Mirrors cmd/eitb/main.go in the root repository, adapted for the C
+ * Mirrors tools/eitb/main.go in the root repository, adapted for the C
  * binding's asymmetry: there is no Streaming No MAC IO-Driven example
  * (`noaead-easy-io` / `noaead-lowlevel-io` from the Go matrix) because
  * the C binding does not expose a FILE* / file-like wrapper writer
@@ -178,7 +178,7 @@ static void result_clear(run_result_t *r)
  * Apply the eitb-wide ITB config to the process-global setters.
  *
  * The configuration uses NonceBits=128 (the libitb default) as a
- * deliberate baseline pick for the C eitb matrix. The Go-side cmd/eitb
+ * deliberate baseline pick for the C eitb matrix. The Go-side tools/eitb
  * uses NonceBits=512; the C binding's streams.c hdr_buf is sized for
  * NonceBits=512 chunk headers (128 bytes, accommodating the 64+4 = 68
  * byte field), so the binding code path supports NonceBits=512 — but
@@ -1008,7 +1008,7 @@ static void run_noaead_lowlevel_userloop(itb_wrapper_cipher_t cipher,
 /* 5. message-easy-nomac — Easy Single Message, No MAC
  * ------------------------------------------------------------------ */
 /*
- * Default eitb path mirrors cmd/eitb/main.go:
+ * Default eitb path mirrors tools/eitb/main.go:
  * itb_wrap_in_place (mutates the ciphertext buffer in place) +
  * itb_unwrap_in_place. The commented `itb_wrap` / `itb_unwrap`
  * alternatives respect immutability of `encrypted` / `wire` at the
