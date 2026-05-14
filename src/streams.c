@@ -1985,11 +1985,11 @@ static itb_status_t encryptor_check_open(const itb_encryptor_t *e)
 /* Wipe-on-grow cache router for the Easy AEAD streaming per-chunk
  * dispatchers. Mirrors encryptor.c::ensure_cache against the SAME
  * encryptor->out_cache field that cipher_call uses for Single Message
- * Easy encrypt / decrypt — the §7.1 contract codifies cache reuse on
+ * Easy encrypt / decrypt — the contract codifies cache reuse on
  * the per-chunk Easy AEAD path with the same scope as the Single Message
  * canonical reference. The cache stays internal as the FFI write
  * target ONLY; user code never observes the cache pointer
- * (§11.o.2 aliasing-footgun mitigation — handled at the return path
+ * (aliasing-footgun mitigation — handled at the return path
  * via a fresh user_buf + memcpy + free, identical to cipher_call).
  *
  * Wipe-on-grow zeroes the previous cache contents before freeing, so
@@ -2025,11 +2025,11 @@ static itb_status_t stream_ensure_cache(struct itb_encryptor *e, size_t need)
  * for the running-offset book-keeping).
  *
  * The FFI write target is the encryptor's internal out_cache, reused
- * across every chunk dispatched through the same encryptor — the §7.1
+ * across every chunk dispatched through the same encryptor — the
  * "Streaming AEAD per-chunk output buffer cache reuse" contract,
  * mirroring encryptor.c::cipher_call. After the FFI returns, a fresh
  * user-owned buffer is malloc'd and the bytes are memcpy'd from the
- * cache (§11.o.2 aliasing-footgun mitigation — never hand the caller
+ * cache (aliasing-footgun mitigation — never hand the caller
  * a pointer into the cache); the user_buf is handed to write_fn and
  * freed once the synchronous callback returns. */
 static itb_status_t emit_chunk_easy_auth(struct itb_encryptor *e,

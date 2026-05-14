@@ -58,8 +58,7 @@
 #define STREAM_TOTAL_BYTES ((size_t)(64u << 20))
 #define STREAM_CHUNK_BYTES ((size_t)(16u << 20))
 
-/* Fixed 32-byte MAC key -- matches the canonical .NEXTBIND.md /
- * .MACSTREAM.md MAC-key length and itb_mac_new's 32-byte hmac-blake3
+/* Fixed 32-byte MAC key matches itb_mac_new's 32-byte hmac-blake3
  * requirement. Value contents are immaterial for throughput
  * measurement; the MAC executes in O(MAC-key-length) per absorb
  * regardless of byte distribution. */
