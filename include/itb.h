@@ -70,7 +70,7 @@ extern "C" {
 
 /* Binding version. Tracks the C wrapper, not the underlying libitb.so;
  * call itb_version() for the libitb library version. */
-#define ITB_C_VERSION "0.1.0"
+#define ITB_C_VERSION "0.1.1"
 
 /* ------------------------------------------------------------------ */
 /* Status codes                                                        */
