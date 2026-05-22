@@ -1,5 +1,11 @@
 # ITB Format-Deniability Wrapper — C Binding
 
+> **Security notice.** ITB is an experimental symmetric cipher construction without prior peer review, independent cryptanalysis, or formal certification. The construction's security properties have **not been verified** by independent cryptographers or mathematicians.
+>
+> PRF-grade hash functions are **required**. No warranty is provided.
+
+**No bespoke cryptography.** ITB introduces no cryptographic primitive of its own — no custom S-box, permutation, or round function. It is a construction over existing primitives, much as PGP composes standard ciphers rather than defining one. Such constructions are not the object of algorithm-level cryptographic certification: national regimes (NIST CAVP/FIPS in the US, GOST/FSB in Russia, KCMVP in South Korea, OSCCA's SM-series in China, SOG-IS/EUCC and national lists in the EU, ASD's ISM in Australia) certify **primitives** and the **modules** built on them, not compositional schemes. Eligibility for regulated use is therefore inherited from the primitives ITB is configured with, not conferred by ITB itself.
+
 C-idiomatic surface over the 12 `ITB_Wrap*` / `ITB_Unwrap*` / `ITB_WrapStream*` / `ITB_UnwrapStream*` / `ITB_WrapperKeySize` / `ITB_WrapperNonceSize` exports in `cmd/cshared/main.go`. Wraps an ITB ciphertext under one of three outer keystream ciphers (AES-128-CTR / ChaCha20 / SipHash-2-4 in CTR mode) so the on-wire bytes carry no ITB-specific format pattern (W / H / container layout for Non-AEAD; 32-byte stream-id prefix + per-chunk metadata for Streaming AEAD). The wrap exists for **format-deniability ONLY** — ITB already provides content-deniability and the AEAD path already provides integrity.
 
 ## Threat model
