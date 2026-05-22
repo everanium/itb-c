@@ -74,7 +74,7 @@ Returns a freshly malloc'd CSPRNG key sized for the named cipher. The caller rel
 The SipHash-CTR construction:
 - 16-byte SipHash key = wrapper key.
 - 16-byte nonce split into `(nonce_hi, nonce_lo)` 64-bit halves.
-- Each keystream block: `siphash.Hash(key, nonce_hi || (nonce_lo XOR counter_LE))` — 8-byte output, XORed with plaintext.
+- Each keystream block: `siphash.Hash128(key, nonce_hi || (nonce_lo XOR counter_LE))` — 16-byte output, XORed with plaintext.
 - Counter increments per block; nonce stays fixed for the stream.
 
 ## Quick Start
