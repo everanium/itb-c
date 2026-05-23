@@ -226,6 +226,8 @@ itb_encryptor_new("areion512", 1024, "hmac-blake3", 1, &enc);
 uint8_t *outerKey = NULL; size_t outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
+// itb_wrapper_derive_key(ITB_WRAPPER_CIPHER_AES_128_CTR, master, master_len,
+//                        &outerKey, &outerKey_len);
 
 /* Sender — collect the inner ITB stream in memory. */
 grow_t inner = {0};
@@ -328,6 +330,8 @@ itb_mac_new ("hmac-blake3", mac_key, sizeof mac_key, &mac);
 uint8_t *outerKey = NULL; size_t outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
+// itb_wrapper_derive_key(ITB_WRAPPER_CIPHER_AES_128_CTR, master, master_len,
+//                        &outerKey, &outerKey_len);
 
 /* Collect the inner ITB stream in memory. */
 grow_t inner = {0};
@@ -471,6 +475,8 @@ uint8_t *outerKey = NULL;
 size_t   outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
+// itb_wrapper_derive_key(ITB_WRAPPER_CIPHER_AES_128_CTR, master, master_len,
+//                        &outerKey, &outerKey_len);
 
 /* Format-deniability ITB masking via outer-cipher wrapper (AES-128-CTR) ~0% overhead (Recommended in every case). */
 uint8_t nonce_buf[16] = {0};
@@ -672,6 +678,8 @@ uint8_t *outerKey = NULL;
 size_t   outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
+// itb_wrapper_derive_key(ITB_WRAPPER_CIPHER_AES_128_CTR, master, master_len,
+//                        &outerKey, &outerKey_len);
 
 /* Format-deniability ITB masking via outer-cipher wrapper (AES-128-CTR) ~0% overhead (Recommended in every case). */
 uint8_t nonce_buf[16] = {0};
@@ -754,6 +762,8 @@ uint8_t *outerKey = NULL;
 size_t   outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
+// itb_wrapper_derive_key(ITB_WRAPPER_CIPHER_AES_128_CTR, master, master_len,
+//                        &outerKey, &outerKey_len);
 
 /* Format-deniability ITB masking via outer-cipher wrapper (AES-128-CTR) ~0% overhead (Recommended in every case). */
 uint8_t nonce_buf[16] = {0};
@@ -867,6 +877,8 @@ uint8_t *outerKey = NULL;
 size_t   outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
+// itb_wrapper_derive_key(ITB_WRAPPER_CIPHER_AES_128_CTR, master, master_len,
+//                        &outerKey, &outerKey_len);
 
 /* Format-deniability ITB masking via outer-cipher wrapper (AES-128-CTR) ~0% overhead (Recommended in every case). */
 uint8_t nonce_buf[16] = {0};
@@ -1065,6 +1077,8 @@ itb_stream_encrypt(n, d, s, /* mac */ NULL,
 uint8_t *outerKey = NULL; size_t outerKey_len = 0;
 itb_wrapper_generate_key(ITB_WRAPPER_CIPHER_AES_128_CTR,
                          &outerKey, &outerKey_len);
+// itb_wrapper_derive_key(ITB_WRAPPER_CIPHER_AES_128_CTR, master, master_len,
+//                        &outerKey, &outerKey_len);
 
 /* Format-deniability ITB masking via outer-cipher wrapper (AES-128-CTR) ~0% overhead (Recommended in every case). */
 uint8_t nonce_buf[16] = {0};

@@ -69,9 +69,9 @@ static const size_t EXPECTED_NONCE[] = { 16, 12, 16 };
 
 START_TEST(test_wrapper_cipher_name_interned)
 {
-    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_AES_128_CTR), "aes");
-    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_CHACHA20), "chacha");
-    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_SIPHASH24), "siphash");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_AES_128_CTR), "aescmac");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_CHACHA20), "chacha20");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_SIPHASH24), "siphash24");
     ck_assert_ptr_eq(itb_wrapper_cipher_name((itb_wrapper_cipher_t) 99), NULL);
 }
 END_TEST
@@ -425,6 +425,63 @@ START_TEST(test_generate_key_drives_full_roundtrip)
 }
 END_TEST
 
+/* itb_wrapper_derive_key: deterministic key derivation from a 32-byte
+ * master (a stand-in for an ML-KEM shared secret; the binding ships no
+ * KEM, so a 32-byte CSPRNG draw is used). Per cipher: the derived key
+ * length matches itb_wrapper_key_size, two derivations from the same
+ * (cipher, master) agree, and the derived key drives a full
+ * wrap/unwrap round-trip. */
+START_TEST(test_derive_key_deterministic_and_roundtrips)
+{
+    uint8_t blob[BLOB_LEN];
+    fill_pattern(blob, BLOB_LEN);
+
+    /* 32 random bytes as the master secret. */
+    uint8_t master[32];
+    FILE *fp = fopen("/dev/urandom", "rb");
+    ck_assert_ptr_nonnull(fp);
+    ck_assert_uint_eq(fread(master, 1, sizeof(master), fp), sizeof(master));
+    fclose(fp);
+
+    for (size_t i = 0; i < ALL_CIPHERS_N; i++) {
+        itb_wrapper_cipher_t cipher = ALL_CIPHERS[i];
+
+        uint8_t *key1 = NULL;
+        size_t key1_len = 0;
+        ck_assert_int_eq(
+            itb_wrapper_derive_key(cipher, master, sizeof(master),
+                                   &key1, &key1_len), ITB_OK);
+        ck_assert_uint_eq(key1_len, EXPECTED_KEY[i]);
+
+        /* Determinism: same (cipher, master) yields the same key. */
+        uint8_t *key2 = NULL;
+        size_t key2_len = 0;
+        ck_assert_int_eq(
+            itb_wrapper_derive_key(cipher, master, sizeof(master),
+                                   &key2, &key2_len), ITB_OK);
+        ck_assert_uint_eq(key2_len, key1_len);
+        ck_assert_mem_eq(key1, key2, key1_len);
+        itb_buffer_free(key2);
+
+        /* The derived key round-trips through wrap/unwrap. */
+        uint8_t *wire = NULL;
+        size_t wire_len = 0;
+        ck_assert_int_eq(itb_wrap(cipher, key1, key1_len, blob, BLOB_LEN,
+                                  &wire, &wire_len), ITB_OK);
+        uint8_t *recovered = NULL;
+        size_t recovered_len = 0;
+        ck_assert_int_eq(itb_unwrap(cipher, key1, key1_len, wire, wire_len,
+                                    &recovered, &recovered_len), ITB_OK);
+        ck_assert_uint_eq(recovered_len, BLOB_LEN);
+        ck_assert_mem_eq(recovered, blob, BLOB_LEN);
+
+        itb_buffer_free(wire);
+        itb_buffer_free(recovered);
+        itb_buffer_free(key1);
+    }
+}
+END_TEST
+
 START_TEST(test_eitb_style_end_to_end_message_easy_nomac)
 {
     /* End-to-end smoke matching one cell of the eitb matrix:
@@ -498,6 +555,7 @@ int main(void)
     tcase_add_test(tc, test_stream_reader_double_free_idempotent);
     tcase_add_test(tc, test_stream_reader_wrong_nonce_length_rejected);
     tcase_add_test(tc, test_generate_key_drives_full_roundtrip);
+    tcase_add_test(tc, test_derive_key_deterministic_and_roundtrips);
     tcase_add_test(tc, test_eitb_style_end_to_end_message_easy_nomac);
     suite_add_tcase(s, tc);
 

@@ -55,7 +55,7 @@ static const itb_wrapper_cipher_t CIPHERS[] = {
     ITB_WRAPPER_CIPHER_CHACHA20,
     ITB_WRAPPER_CIPHER_SIPHASH24,
 };
-static const char *const CIPHER_NAMES[] = { "aes", "chacha", "siphash" };
+static const char *const CIPHER_NAMES[] = { "aescmac", "chacha20", "siphash24" };
 #define CIPHER_COUNT 3
 
 #define WRAPPER_PAYLOAD_BYTES BENCH_PAYLOAD_16MB
