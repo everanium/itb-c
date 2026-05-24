@@ -1385,30 +1385,41 @@ itb_status_t itb_encryptor_stream_decrypt_auth(itb_encryptor_t *e,
 typedef enum itb_wrapper_cipher {
     ITB_WRAPPER_CIPHER_AES_128_CTR = 0,
     ITB_WRAPPER_CIPHER_CHACHA20    = 1,
-    ITB_WRAPPER_CIPHER_SIPHASH24   = 2
+    ITB_WRAPPER_CIPHER_SIPHASH24   = 2,
+    ITB_WRAPPER_CIPHER_AREION_256  = 3,
+    ITB_WRAPPER_CIPHER_AREION_512  = 4,
+    ITB_WRAPPER_CIPHER_BLAKE2B_256 = 5,
+    ITB_WRAPPER_CIPHER_BLAKE2B_512 = 6,
+    ITB_WRAPPER_CIPHER_BLAKE2S     = 7,
+    ITB_WRAPPER_CIPHER_BLAKE3      = 8
 } itb_wrapper_cipher_t;
 
 /*
  * Returns the canonical short name of the named outer cipher ("aescmac" /
- * "chacha20" / "siphash24") as an interned NUL-terminated C string. The
- * pointer is owned by libitb_c and stays valid for the lifetime of the
- * process; callers MUST NOT free it. Returns NULL for any value not in
- * itb_wrapper_cipher_t.
+ * "chacha20" / "siphash24" / "areion256" / "areion512" / "blake2b256" /
+ * "blake2b512" / "blake2s" / "blake3") as an interned NUL-terminated C
+ * string. The pointer is owned by libitb_c and stays valid for the
+ * lifetime of the process; callers MUST NOT free it. Returns NULL for any
+ * value not in itb_wrapper_cipher_t.
  */
 const char *itb_wrapper_cipher_name(itb_wrapper_cipher_t cipher);
 
 /*
  * Returns the byte length of the keystream-cipher key for the named
- * outer cipher via *out_size: 16 for AES-128-CTR / SipHash-CTR; 32
- * for ChaCha20. Returns ITB_BAD_INPUT for an unknown cipher value.
+ * outer cipher via *out_size: 16 for AES-128-CTR / SipHash-CTR; 32 for
+ * ChaCha20 / Areion-SoEM-256 / BLAKE2b-256 / BLAKE2b-512 / BLAKE2s /
+ * BLAKE3; 64 for Areion-SoEM-512. Returns ITB_BAD_INPUT for an unknown
+ * cipher value.
  */
 itb_status_t itb_wrapper_key_size(itb_wrapper_cipher_t cipher,
                                   size_t *out_size);
 
 /*
  * Returns the on-wire nonce length the named outer cipher emits per
- * stream via *out_size: 16 for AES-128-CTR / SipHash-CTR; 12 for
- * ChaCha20. Returns ITB_BAD_INPUT for an unknown cipher value.
+ * stream via *out_size: 12 for ChaCha20; 16 for every other outer
+ * cipher (AES-128-CTR / SipHash-CTR / Areion-SoEM-256 / Areion-SoEM-512 /
+ * BLAKE2b-256 / BLAKE2b-512 / BLAKE2s / BLAKE3). Returns ITB_BAD_INPUT
+ * for an unknown cipher value.
  */
 itb_status_t itb_wrapper_nonce_size(itb_wrapper_cipher_t cipher,
                                     size_t *out_size);
@@ -1438,9 +1449,9 @@ itb_status_t itb_wrapper_generate_key(itb_wrapper_cipher_t cipher,
  * reported by itb_wrapper_key_size). On failure *out_key is NULL and
  * *out_key_len is 0; itb_last_error() carries the diagnostic.
  *
- * `master` must be at least itb_wrapper_key_size(cipher) bytes; a
- * shorter master returns ITB_BAD_INPUT. Returns ITB_BAD_INPUT for an
- * unknown cipher value.
+ * `master` must be at least 32 bytes (the wrapper's uniform security
+ * floor); a shorter master returns ITB_BAD_INPUT. Returns ITB_BAD_INPUT
+ * for an unknown cipher value.
  */
 itb_status_t itb_wrapper_derive_key(itb_wrapper_cipher_t cipher,
                                     const uint8_t *master, size_t master_len,

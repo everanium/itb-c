@@ -1484,6 +1484,7 @@ and `_width` / `_mode`.
 | `itb_status_t itb_wrapper_key_size(itb_wrapper_cipher_t cipher, size_t *out)` | Key size in bytes for a given cipher |
 | `itb_status_t itb_wrapper_nonce_size(itb_wrapper_cipher_t cipher, size_t *out)` | Wire nonce size in bytes |
 | `itb_status_t itb_wrapper_generate_key(itb_wrapper_cipher_t cipher, uint8_t *out, size_t out_cap)` | CSPRNG-fresh wrapper key |
+| `itb_status_t itb_wrapper_derive_key(itb_wrapper_cipher_t cipher, const uint8_t *master, size_t master_len, uint8_t **out_key, size_t *out_key_len)` | Deterministic wrapper key from a master secret (>= 32 bytes, e.g. an ML-KEM shared secret) |
 | `itb_status_t itb_wrap(cipher, key, blob, ...)` / `itb_unwrap(cipher, key, wire, ...)` | Single Message Wrap / Unwrap |
 | `itb_status_t itb_wrap_in_place(cipher, key, buf, ...)` / `itb_unwrap_in_place(...)` | In-place Wrap / Unwrap |
 | `itb_status_t itb_wrap_stream_writer_new(cipher, key, itb_wrap_stream_writer_t **out)` | Open a streaming wrap writer |
@@ -1491,8 +1492,11 @@ and `_width` / `_mode`.
 | `itb_status_t itb_unwrap_stream_reader_new(cipher, key, wire_nonce, ...)` / `..._update(...)` / `void ..._free(r)` | Streaming unwrap reader |
 
 The wrapper cipher enum (`itb_wrapper_cipher_t`) covers
-`ITB_WRAPPER_CIPHER_AES_128_CTR`, `ITB_WRAPPER_CIPHER_CHACHA20`, and
-`ITB_WRAPPER_CIPHER_SIPHASH24`.
+`ITB_WRAPPER_CIPHER_AES_128_CTR`, `ITB_WRAPPER_CIPHER_CHACHA20`,
+`ITB_WRAPPER_CIPHER_SIPHASH24`, `ITB_WRAPPER_CIPHER_AREION_256`,
+`ITB_WRAPPER_CIPHER_AREION_512`, `ITB_WRAPPER_CIPHER_BLAKE2B_256`,
+`ITB_WRAPPER_CIPHER_BLAKE2B_512`, `ITB_WRAPPER_CIPHER_BLAKE2S`, and
+`ITB_WRAPPER_CIPHER_BLAKE3`.
 
 ### Error handling
 

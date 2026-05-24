@@ -56,12 +56,18 @@
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-/* Cipher list mirrored from include/itb.h enum order; matches
+/* Cipher list in the canonical project primitive order; matches
  * wrapper.CipherNames in the Go-side wrapper package. */
 static const itb_wrapper_cipher_t CIPHERS[] = {
-    ITB_WRAPPER_CIPHER_AES_128_CTR,
-    ITB_WRAPPER_CIPHER_CHACHA20,
+    ITB_WRAPPER_CIPHER_AREION_256,
+    ITB_WRAPPER_CIPHER_AREION_512,
     ITB_WRAPPER_CIPHER_SIPHASH24,
+    ITB_WRAPPER_CIPHER_AES_128_CTR,
+    ITB_WRAPPER_CIPHER_BLAKE2B_256,
+    ITB_WRAPPER_CIPHER_BLAKE2B_512,
+    ITB_WRAPPER_CIPHER_BLAKE2S,
+    ITB_WRAPPER_CIPHER_BLAKE3,
+    ITB_WRAPPER_CIPHER_CHACHA20,
 };
 #define CIPHER_COUNT (sizeof(CIPHERS) / sizeof(CIPHERS[0]))
 

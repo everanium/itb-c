@@ -57,21 +57,36 @@ static void fill_pattern(uint8_t *buf, size_t n)
 }
 
 static const itb_wrapper_cipher_t ALL_CIPHERS[] = {
-    ITB_WRAPPER_CIPHER_AES_128_CTR,
-    ITB_WRAPPER_CIPHER_CHACHA20,
+    ITB_WRAPPER_CIPHER_AREION_256,
+    ITB_WRAPPER_CIPHER_AREION_512,
     ITB_WRAPPER_CIPHER_SIPHASH24,
+    ITB_WRAPPER_CIPHER_AES_128_CTR,
+    ITB_WRAPPER_CIPHER_BLAKE2B_256,
+    ITB_WRAPPER_CIPHER_BLAKE2B_512,
+    ITB_WRAPPER_CIPHER_BLAKE2S,
+    ITB_WRAPPER_CIPHER_BLAKE3,
+    ITB_WRAPPER_CIPHER_CHACHA20,
 };
 
 static const size_t ALL_CIPHERS_N = sizeof(ALL_CIPHERS) / sizeof(ALL_CIPHERS[0]);
 
-static const size_t EXPECTED_KEY[]   = { 16, 32, 16 };
-static const size_t EXPECTED_NONCE[] = { 16, 12, 16 };
+/* Key / nonce byte lengths paired by ALL_CIPHERS index:
+ * areion256 / areion512 / siphash24 / aescmac / blake2b256 / blake2b512 /
+ * blake2s / blake3 / chacha20. */
+static const size_t EXPECTED_KEY[]   = { 32, 64, 16, 16, 32, 32, 32, 32, 32 };
+static const size_t EXPECTED_NONCE[] = { 16, 16, 16, 16, 16, 16, 16, 16, 12 };
 
 START_TEST(test_wrapper_cipher_name_interned)
 {
     ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_AES_128_CTR), "aescmac");
     ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_CHACHA20), "chacha20");
     ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_SIPHASH24), "siphash24");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_AREION_256), "areion256");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_AREION_512), "areion512");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_BLAKE2B_256), "blake2b256");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_BLAKE2B_512), "blake2b512");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_BLAKE2S), "blake2s");
+    ck_assert_str_eq(itb_wrapper_cipher_name(ITB_WRAPPER_CIPHER_BLAKE3), "blake3");
     ck_assert_ptr_eq(itb_wrapper_cipher_name((itb_wrapper_cipher_t) 99), NULL);
 }
 END_TEST
