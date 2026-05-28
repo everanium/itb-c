@@ -57,6 +57,17 @@ int env_nonce_bits(int default_value) {
     return default_value;
 }
 
+int env_lock_batch(void) {
+    const char *v = getenv("ITB_LOCKBATCH");
+    if (v == NULL || v[0] == '\0') {
+        return 0;
+    }
+    if (strcmp(v, "0") == 0) {
+        return 0;
+    }
+    return 1;
+}
+
 int env_lock_seed(void) {
     const char *v = getenv("ITB_LOCKSEED");
     if (v == NULL || v[0] == '\0') {
@@ -295,4 +306,11 @@ void run_all(bench_case_t *cases, size_t n_cases) {
         free(cases[i].name);
         cases[i].name = NULL;
     }
+}
+
+/* ----- Single-case public measurement ------------------------------- */
+
+void bench_measure_one(bench_case_t *c, double min_seconds)
+{
+    measure(c, min_seconds);
 }

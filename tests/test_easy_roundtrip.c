@@ -24,12 +24,12 @@
 static const struct { const char *name; int width; } CANONICAL_HASHES[] = {
     {"areion256",  256},
     {"areion512",  512},
-    {"siphash24",  128},
-    {"aescmac",    128},
     {"blake2b256", 256},
     {"blake2b512", 512},
     {"blake2s",    256},
     {"blake3",     256},
+    {"aescmac",    128},
+    {"siphash24",  128},
     {"chacha20",   256},
 };
 #define CANONICAL_HASHES_COUNT (sizeof(CANONICAL_HASHES) / sizeof(CANONICAL_HASHES[0]))

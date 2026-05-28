@@ -140,7 +140,7 @@ state.
 
 A custom Go-bench-style harness lives under `bench/` and covers the
 four ops (`encrypt`, `decrypt`, `encrypt_auth`, `decrypt_auth`) across
-the nine PRF-grade primitives plus one mixed-primitive variant for
+PRF-grade primitives plus one mixed-primitive variant for
 both Single and Triple Ouroboros at 1024-bit ITB key width and 16 MiB
 payload. See [`bench/README.md`](bench/README.md) for invocation /
 environment variables / output format and [`bench/BENCH.md`](bench/BENCH.md)
@@ -441,6 +441,11 @@ itb_encryptor_set_bit_soup(enc, 1);        /* optional bit-level split ("bit-sou
 itb_encryptor_set_lock_soup(enc, 1);       /* optional Insane Interlocked Mode: per-chunk PRF-keyed
                                             * bit-permutation overlay on top of bit-soup;
                                             * auto-enabled for Single Ouroboros if set_bit_soup(1) is on */
+itb_encryptor_set_lock_batch(enc, 1);      /* Lock Batch is the performance Lock Soup mode: recommended
+                                            * in every case when the configured hash is PRF-grade, since
+                                            * security is preserved under the PRF assumption while
+                                            * throughput rises. Symmetric option — set identically on
+                                            * the encrypt and decrypt sides. */
 
 /* itb_encryptor_set_lock_seed(enc, 1);    optional dedicated lockSeed for the bit-permutation
                                            derivation channel — separates that PRF's keying
@@ -547,7 +552,7 @@ itb_encryptor_new(prim_buf, peek_kb, mac_buf, peek_mode, &dec);
 
 /* itb_encryptor_import(dec, blob, blob_len) below automatically
  * restores the full per-instance configuration (nonce_bits,
- * barrier_fill, bit_soup, lock_soup, and the dedicated lockSeed
+ * barrier_fill, bit_soup, lock_soup, lock_batch, and the dedicated lockSeed
  * material when sender's set_lock_seed(1) was active). The set_*
  * lines below are kept for documentation — they show the knobs
  * available for explicit pre-Import override. barrier_fill is
@@ -558,13 +563,14 @@ itb_encryptor_set_nonce_bits(dec, 512);
 itb_encryptor_set_barrier_fill(dec, 4);
 itb_encryptor_set_bit_soup(dec, 1);
 itb_encryptor_set_lock_soup(dec, 1);
+itb_encryptor_set_lock_batch(dec, 1);      /* Recommended under the PRF assumption — the performance Lock Soup mode; symmetric, set on both sides. */
 /* itb_encryptor_set_lock_seed(dec, 1);   optional — Import below restores
                                           the dedicated lockSeed slot from
                                           the blob's lock_seed:true. */
 
 /* Restore PRF keys, seed components, MAC key, and the per-instance
  * configuration overrides (nonce_bits / barrier_fill / bit_soup /
- * lock_soup / lock_seed) from the saved blob. */
+ * lock_soup / lock_batch / lock_seed) from the saved blob. */
 itb_encryptor_import(dec, blob, blob_len);
 
 /* Authenticated decrypt — any single-bit tamper triggers MAC
@@ -831,6 +837,11 @@ itb_set_lock_soup(1);       /* optional Insane Interlocked Mode: per-chunk PRF-k
                              * bit-permutation overlay on top of bit-soup;
                              * automatically enabled for Single Ouroboros if
                              * itb_set_bit_soup(1) is enabled or vice versa */
+itb_set_lock_batch(1);      /* Lock Batch is the performance Lock Soup mode: recommended
+                             * in every case when the configured hash is PRF-grade, since
+                             * security is preserved under the PRF assumption while
+                             * throughput rises. Symmetric option — set identically on
+                             * the encrypt and decrypt sides. */
 
 /* Three independent CSPRNG-keyed Areion-SoEM-512 seeds. Each Seed
  * pre-keys its primitive once at construction; the C ABI / FFI
@@ -1182,15 +1193,7 @@ setters.
 
 ## Hash primitives (Single / Triple)
 
-Names match the canonical `hashes/` registry. Listed below in the
-binding-side canonical PRF-only ordering — **Areion-SoEM-256**,
-**Areion-SoEM-512**, **BLAKE2b-256**, **BLAKE2b-512**, **BLAKE2s**,
-**BLAKE3**, **AES-CMAC**, **SipHash-2-4**, **ChaCha20** — the FFI names
-are `areion256`, `areion512`, `blake2b256`, `blake2b512`, `blake2s`,
-`blake3`, `aescmac`, `siphash24`, `chacha20`. The below-spec lab
-primitives in the documentation's canonical ordering (CRC128, FNV-1a,
-MD5) are not exposed through the libitb registry and are absent from
-the C binding by construction. Triple Ouroboros (3× security) takes
+Names match the canonical `hashes/` registry. Triple Ouroboros takes
 seven seeds (one shared `noiseSeed` plus three `dataSeed` and three
 `startSeed`) via `itb_encrypt_triple` / `itb_decrypt_triple` and the
 authenticated counterparts `itb_encrypt_auth_triple` /
@@ -1225,6 +1228,7 @@ than crashing.
 | `itb_set_barrier_fill(n)` | 1, 2, 4, 8, 16, 32 | 1 |
 | `itb_set_bit_soup(mode)` | 0 (off), non-zero (on) | 0 |
 | `itb_set_lock_soup(mode)` | 0 (off), non-zero (on) | 0 |
+| `itb_set_lock_batch(mode)` | 0 (off), non-zero (on) | 0 |
 
 Read-only constants: `itb_max_key_bits()`, `itb_channels()`,
 `itb_header_size()`, `itb_version(out, cap, &out_len)`.
@@ -1406,6 +1410,7 @@ probe-then-fill convention.
 |---|---|
 | `itb_status_t itb_set_bit_soup(int mode)` / `int itb_get_bit_soup(void)` | Bit Soup mode toggle |
 | `itb_status_t itb_set_lock_soup(int mode)` / `int itb_get_lock_soup(void)` | Lock Soup mode toggle |
+| `itb_status_t itb_set_lock_batch(int mode)` / `int itb_get_lock_batch(void)` | Lock Batch mode toggle (performance variant of Lock Soup; recommended under the PRF assumption; symmetric; inert unless Lock Soup is engaged) |
 | `itb_status_t itb_set_max_workers(int n)` / `int itb_get_max_workers(void)` | Worker pool size cap |
 | `itb_status_t itb_set_nonce_bits(int n)` / `int itb_get_nonce_bits(void)` | Nonce width (128 / 256 / 512) |
 | `itb_status_t itb_set_barrier_fill(int n)` / `int itb_get_barrier_fill(void)` | Barrier-fill factor (1, 2, 4, 8, 16, 32) |
@@ -1449,7 +1454,7 @@ probe-then-fill convention.
 | `itb_status_t itb_encryptor_new_mixed(...)` / `itb_encryptor_new_mixed3(...)` | Mixed-primitive Single / Triple constructors |
 | `itb_status_t itb_encryptor_encrypt(...)` / `itb_encryptor_decrypt(...)` | Cipher entry points |
 | `itb_status_t itb_encryptor_encrypt_auth(...)` / `itb_encryptor_decrypt_auth(...)` | MAC-authenticated cipher entry points |
-| `itb_status_t itb_encryptor_set_nonce_bits / _barrier_fill / _bit_soup / _lock_soup / _lock_seed / _chunk_size (e, n)` | Per-instance overrides |
+| `itb_status_t itb_encryptor_set_nonce_bits / _barrier_fill / _bit_soup / _lock_soup / _lock_batch / _lock_seed / _chunk_size (e, n)` | Per-instance overrides |
 | `itb_status_t itb_encryptor_primitive / _mac_name / _primitive_at / _key_bits / _mode / _seed_count / _nonce_bits / _header_size / _has_prf_keys / _is_mixed (...)` | Configuration accessors |
 | `itb_status_t itb_encryptor_parse_chunk_len(...)` | Per-instance chunk-length parser |
 | `itb_status_t itb_encryptor_prf_key(e, slot, ...)` / `itb_encryptor_mac_key(e, ...)` / `itb_encryptor_seed_components(...)` | Key-material accessors |
@@ -1492,11 +1497,12 @@ and `_width` / `_mode`.
 | `itb_status_t itb_unwrap_stream_reader_new(cipher, key, wire_nonce, ...)` / `..._update(...)` / `void ..._free(r)` | Streaming unwrap reader |
 
 The wrapper cipher enum (`itb_wrapper_cipher_t`) covers
-`ITB_WRAPPER_CIPHER_AES_128_CTR`, `ITB_WRAPPER_CIPHER_CHACHA20`,
-`ITB_WRAPPER_CIPHER_SIPHASH24`, `ITB_WRAPPER_CIPHER_AREION_256`,
-`ITB_WRAPPER_CIPHER_AREION_512`, `ITB_WRAPPER_CIPHER_BLAKE2B_256`,
-`ITB_WRAPPER_CIPHER_BLAKE2B_512`, `ITB_WRAPPER_CIPHER_BLAKE2S`, and
-`ITB_WRAPPER_CIPHER_BLAKE3`.
+
+`ITB_WRAPPER_CIPHER_AREION_256`, `ITB_WRAPPER_CIPHER_AREION_512`,
+`ITB_WRAPPER_CIPHER_BLAKE2B_256`, `ITB_WRAPPER_CIPHER_BLAKE2B_512`,
+`ITB_WRAPPER_CIPHER_BLAKE2S`, `ITB_WRAPPER_CIPHER_BLAKE3`,
+`ITB_WRAPPER_CIPHER_AES_128_CTR`, `ITB_WRAPPER_CIPHER_SIPHASH24`,
+`ITB_WRAPPER_CIPHER_CHACHA20`, etc...
 
 ### Error handling
 

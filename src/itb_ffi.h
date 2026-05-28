@@ -87,6 +87,8 @@ extern int ITB_SetBitSoup(int mode);
 extern int ITB_GetBitSoup(void);
 extern int ITB_SetLockSoup(int mode);
 extern int ITB_GetLockSoup(void);
+extern int ITB_SetLockBatch(int mode);
+extern int ITB_GetLockBatch(void);
 extern int ITB_SetMaxWorkers(int n);
 extern int ITB_GetMaxWorkers(void);
 extern int ITB_SetNonceBits(int n);
@@ -123,6 +125,7 @@ extern int ITB_Easy_SetNonceBits(uintptr_t handle, int n);
 extern int ITB_Easy_SetBarrierFill(uintptr_t handle, int n);
 extern int ITB_Easy_SetBitSoup(uintptr_t handle, int mode);
 extern int ITB_Easy_SetLockSoup(uintptr_t handle, int mode);
+extern int ITB_Easy_SetLockBatch(uintptr_t handle, int mode);
 extern int ITB_Easy_SetLockSeed(uintptr_t handle, int mode);
 extern int ITB_Easy_SetChunkSize(uintptr_t handle, int n);
 extern int ITB_Easy_Primitive(uintptr_t handle, char *out, size_t cap_bytes, size_t *out_len);
@@ -284,8 +287,8 @@ extern int ITB_Easy_DecryptStreamAuth(
  * 12 raw libitb exports that back the public-facing itb_wrap* /
  * itb_unwrap* / itb_wrap_stream_writer_* / itb_unwrap_stream_reader_*
  * surface declared in itb.h. The cipherName argument is a UTF-8
- * NUL-terminated string ("aescmac" / "chacha20" / "siphash24"); see
- * `wrapper/wrapper.go` for the source-of-truth construction.
+ * NUL-terminated string; see `wrapper/wrapper.go`
+ * for the source-of-truth construction.
  */
 extern int ITB_WrapperKeySize(char *cipher_name, size_t *out_size);
 extern int ITB_WrapperNonceSize(char *cipher_name, size_t *out_size);

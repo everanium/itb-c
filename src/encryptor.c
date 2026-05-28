@@ -521,6 +521,7 @@ EASY_SETTER(itb_encryptor_set_nonce_bits,   ITB_Easy_SetNonceBits)
 EASY_SETTER(itb_encryptor_set_barrier_fill, ITB_Easy_SetBarrierFill)
 EASY_SETTER(itb_encryptor_set_bit_soup,     ITB_Easy_SetBitSoup)
 EASY_SETTER(itb_encryptor_set_lock_soup,    ITB_Easy_SetLockSoup)
+EASY_SETTER(itb_encryptor_set_lock_batch,   ITB_Easy_SetLockBatch)
 EASY_SETTER(itb_encryptor_set_lock_seed,    ITB_Easy_SetLockSeed)
 EASY_SETTER(itb_encryptor_set_chunk_size,   ITB_Easy_SetChunkSize)
 

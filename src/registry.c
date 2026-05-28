@@ -114,6 +114,7 @@ int itb_mac_min_key_bytes(int i) { return ITB_MACMinKeyBytes(i); }
 
 ITB_SET_INT(itb_set_bit_soup,     ITB_SetBitSoup)
 ITB_SET_INT(itb_set_lock_soup,    ITB_SetLockSoup)
+ITB_SET_INT(itb_set_lock_batch,   ITB_SetLockBatch)
 ITB_SET_INT(itb_set_max_workers,  ITB_SetMaxWorkers)
 ITB_SET_INT(itb_set_nonce_bits,   ITB_SetNonceBits)
 ITB_SET_INT(itb_set_barrier_fill, ITB_SetBarrierFill)
@@ -122,6 +123,7 @@ ITB_SET_INT(itb_set_barrier_fill, ITB_SetBarrierFill)
 
 int itb_get_bit_soup(void)     { return ITB_GetBitSoup();     }
 int itb_get_lock_soup(void)    { return ITB_GetLockSoup();    }
+int itb_get_lock_batch(void)   { return ITB_GetLockBatch();   }
 int itb_get_max_workers(void)  { return ITB_GetMaxWorkers();  }
 int itb_get_nonce_bits(void)   { return ITB_GetNonceBits();   }
 int itb_get_barrier_fill(void) { return ITB_GetBarrierFill(); }

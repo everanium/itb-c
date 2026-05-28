@@ -25,12 +25,12 @@
 static const struct { const char *name; int width; } CANONICAL_HASHES[] = {
     {"areion256",  256},
     {"areion512",  512},
-    {"siphash24",  128},
-    {"aescmac",    128},
     {"blake2b256", 256},
     {"blake2b512", 512},
     {"blake2s",    256},
     {"blake3",     256},
+    {"aescmac",    128},
+    {"siphash24",  128},
     {"chacha20",   256},
 };
 #define CANONICAL_HASHES_COUNT (sizeof(CANONICAL_HASHES) / sizeof(CANONICAL_HASHES[0]))
@@ -38,12 +38,12 @@ static const struct { const char *name; int width; } CANONICAL_HASHES[] = {
 static size_t expected_prf_key_len(const char *name) {
     if (strcmp(name, "areion256")  == 0) return 32;
     if (strcmp(name, "areion512")  == 0) return 64;
-    if (strcmp(name, "siphash24")  == 0) return 0;
-    if (strcmp(name, "aescmac")    == 0) return 16;
     if (strcmp(name, "blake2b256") == 0) return 32;
     if (strcmp(name, "blake2b512") == 0) return 64;
     if (strcmp(name, "blake2s")    == 0) return 32;
     if (strcmp(name, "blake3")     == 0) return 32;
+    if (strcmp(name, "aescmac")    == 0) return 16;
+    if (strcmp(name, "siphash24")  == 0) return 0;
     if (strcmp(name, "chacha20")   == 0) return 32;
     ck_abort_msg("unknown hash %s", name);
     return 0;

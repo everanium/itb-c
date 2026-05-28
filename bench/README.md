@@ -12,11 +12,10 @@ encryption / decryption surface exposed by the C binding through two
 `common.h` module:
 
 * `bench_single.c` — Single Ouroboros (mode = 1, 3 seeds + optional
-  dedicated lockSeed). Walks the nine PRF-grade primitives plus one
+  dedicated lockSeed). Walks PRF-grade primitives plus one
   mixed-primitive variant.
 * `bench_triple.c` — Triple Ouroboros (mode = 3, 7 seeds + optional
-  dedicated lockSeed). Same nine + one mixed grid as the Single
-  binary.
+  dedicated lockSeed).
 
 Both binaries pin **1024-bit ITB key width** and **16 MiB
 non-deterministic-fill payload**, run four ops per case
@@ -90,7 +89,8 @@ make bench
 | Variable             | Default | Purpose |
 |----------------------|---------|---------|
 | `ITB_NONCE_BITS`     | `128`   | Process-wide nonce width — `128`, `256`, or `512`. Maps to `itb_set_nonce_bits` before any encryptor is constructed. Mirrors `ITB_NONCE_BITS` from `bitbyte_test.go`. |
-| `ITB_LOCKSEED`       | unset   | When set to a non-empty / non-`0` value, every encryptor in the run calls `itb_encryptor_set_lock_seed(e, 1)`. Easy Mode auto-couples `set_bit_soup(1)` + `set_lock_soup(1)`, so no separate flags are needed. The mixed-primitive cases attach a dedicated lockSeed primitive (via `prim_l = "chacha20"`) only under this flag; otherwise `prim_l` is `NULL` so the no-LockSeed bench arm measures the plain mixed-primitive cost. |
+| `ITB_LOCKBATCH`      | unset   | Non-empty / non-`0` enables Lock Batch (performance Lock Soup mode); set with `ITB_LOCKSEED`. Every encryptor additionally calls `itb_encryptor_set_lock_batch(e, 1)`. Inert unless Lock Soup is engaged via `ITB_LOCKSEED`. |
+| `ITB_LOCKSEED`       | unset   | When set to a non-empty / non-`0` value, every encryptor in the run calls `itb_encryptor_set_lock_seed(e, 1)`. Easy Mode auto-couples `set_bit_soup(1)` + `set_lock_soup(1)`, so no separate flags are needed. The mixed-primitive cases attach a dedicated lockSeed primitive only under this flag; otherwise `prim_l` is `NULL` so the no-LockSeed bench arm measures the plain mixed-primitive cost. |
 | `ITB_BENCH_FILTER`   | unset   | Substring filter on bench-case names — only cases whose name contains the filter are run. Useful when iterating on one primitive / op. |
 | `ITB_BENCH_MIN_SEC`  | `5.0`   | Minimum measured wall-clock seconds per case. The runner keeps doubling iteration count until the measured batch reaches the threshold, mirroring Go's `-benchtime=Ns`. The 5-second default absorbs the cold-cache / warm-up transient that distorts shorter measurement windows on the 16 MiB encrypt / decrypt path. |
 
@@ -106,9 +106,11 @@ Whole grid, default settings (128-bit nonces, no lockSeed):
 ```
 
 512-bit nonces with the dedicated lockSeed channel + auto-coupled
-overlay:
+overlay (the `ITB_LOCKBATCH=1` form selects the Lock Batch performance
+variant of Lock Soup):
 
 ```bash
+ITB_NONCE_BITS=512 ITB_LOCKSEED=1 ITB_LOCKBATCH=1 ./bench/build/bench_triple
 ITB_NONCE_BITS=512 ITB_LOCKSEED=1 ./bench/build/bench_triple
 ```
 
@@ -158,8 +160,8 @@ path.
 
 ## Expected runtime
 
-At the default `ITB_BENCH_MIN_SEC=5`, each pass walks 40 cases (9
-single-primitive + 1 mixed × 4 ops) and converges per case in 5–15
+At the default `ITB_BENCH_MIN_SEC=5`, each pass walks 40 cases (
+single-primitives + 1 mixed × 4 ops) and converges per case in 5–15
 wall-clock seconds depending on the primitive's per-byte cost. A
 full pass therefore lands at 5–10 minutes; the four canonical passes
 (Single ±LockSeed, Triple ±LockSeed) fill BENCH.md in ~30 minutes of

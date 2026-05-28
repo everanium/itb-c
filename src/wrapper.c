@@ -35,23 +35,21 @@
 /* Cipher-name table                                                   */
 /* ------------------------------------------------------------------ */
 /*
- * Nine interned NUL-terminated short names ("aescmac" / "chacha20" /
- * "siphash24" / "areion256" / "areion512" / "blake2b256" / "blake2b512" /
- * "blake2s" / "blake3") indexed by itb_wrapper_cipher_t. The pointer
+ * NUL-terminated short names indexed by itb_wrapper_cipher_t. The pointer
  * table is static-storage so the returned pointers stay valid for the
  * life of the process. Out-of-range values map to NULL via the bounds
  * check in itb_wrapper_cipher_name.
  */
 static const char *const ITB_WRAPPER_CIPHER_NAMES[] = {
-    "aescmac",    /* ITB_WRAPPER_CIPHER_AES_128_CTR */
-    "chacha20",   /* ITB_WRAPPER_CIPHER_CHACHA20    */
-    "siphash24",  /* ITB_WRAPPER_CIPHER_SIPHASH24   */
     "areion256",  /* ITB_WRAPPER_CIPHER_AREION_256  */
     "areion512",  /* ITB_WRAPPER_CIPHER_AREION_512  */
     "blake2b256", /* ITB_WRAPPER_CIPHER_BLAKE2B_256 */
     "blake2b512", /* ITB_WRAPPER_CIPHER_BLAKE2B_512 */
     "blake2s",    /* ITB_WRAPPER_CIPHER_BLAKE2S     */
-    "blake3"      /* ITB_WRAPPER_CIPHER_BLAKE3      */
+    "blake3",     /* ITB_WRAPPER_CIPHER_BLAKE3      */
+    "aescmac",    /* ITB_WRAPPER_CIPHER_AES_128_CTR */
+    "siphash24",  /* ITB_WRAPPER_CIPHER_SIPHASH24   */
+    "chacha20"    /* ITB_WRAPPER_CIPHER_CHACHA20    */
 };
 
 #define ITB_WRAPPER_CIPHER_COUNT \
@@ -69,7 +67,7 @@ static const char *cipher_name_or_set_error(itb_wrapper_cipher_t cipher)
     if (idx < 0 || idx >= ITB_WRAPPER_CIPHER_COUNT) {
         itb_internal_set_error_msg(
             ITB_BAD_INPUT,
-            "wrapper: unknown cipher value (expected one of the nine "
+            "wrapper: unknown cipher value (expected one of "
             "supported outer ciphers)");
         return NULL;
     }
@@ -138,7 +136,7 @@ itb_status_t itb_wrapper_nonce_size(itb_wrapper_cipher_t cipher,
  * Caller-side CSPRNG. The libitb side draws its own per-call nonce
  * from crypto/rand for every Wrap / WrapInPlace / WrapStreamWriter_Init
  * call; this helper is the matching "give me a fresh outer cipher key"
- * convenience that the Python / Rust / etc. bindings expose. Reads
+ * convenience that the other bindings expose. Reads
  * /dev/urandom on POSIX hosts.
  *
  * The reason this routes through /dev/urandom rather than Go's

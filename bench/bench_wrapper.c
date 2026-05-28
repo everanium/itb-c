@@ -8,14 +8,15 @@
  * FILE* / file-like wrapper writer / reader pair for Non-AEAD
  * streaming).
  *
- * Total sub-bench count: **102**.
+ * The outer-cipher palette covers every cipher in
+ * PRIMITIVES_CANONICAL order (areion256, areion512, blake2b256,
+ * blake2b512, blake2s, blake3, aescmac, siphash24, chacha20):
  *
- *   - Wrapper Only round-trip (16 MiB blob)              :  6
- *     ( 3 ciphers × 2 variants {Wrap, WrapInPlace} )
- *   - Message Single — 4 modes × 3 ciphers × 2 dirs      : 24
- *   - Message Triple — 4 modes × 3 ciphers × 2 dirs      : 24
- *   - Streaming Single — 4 modes × 3 ciphers × 2 dirs    : 24
- *   - Streaming Triple — 4 modes × 3 ciphers × 2 dirs    : 24
+ *   - Wrapper Only round-trip (16 MiB blob)              : 2 variants {Wrap, WrapInPlace} per cipher
+ *   - Message Single — 4 modes × 2 dirs per cipher
+ *   - Message Triple — 4 modes × 2 dirs per cipher
+ *   - Streaming Single — 4 modes × 2 dirs per cipher
+ *   - Streaming Triple — 4 modes × 2 dirs per cipher
  *
  * 4 message modes: easy-nomac / easy-auth / lowlevel-nomac /
  * lowlevel-auth.
@@ -50,13 +51,25 @@
 
 /* ----- Configuration ------------------------------------------------ */
 
+/* Full outer-keystream palette in PRIMITIVES_CANONICAL order
+ * (areion256, areion512, blake2b256, blake2b512, blake2s, blake3,
+ * aescmac, siphash24, chacha20). */
 static const itb_wrapper_cipher_t CIPHERS[] = {
+    ITB_WRAPPER_CIPHER_AREION_256,
+    ITB_WRAPPER_CIPHER_AREION_512,
+    ITB_WRAPPER_CIPHER_BLAKE2B_256,
+    ITB_WRAPPER_CIPHER_BLAKE2B_512,
+    ITB_WRAPPER_CIPHER_BLAKE2S,
+    ITB_WRAPPER_CIPHER_BLAKE3,
     ITB_WRAPPER_CIPHER_AES_128_CTR,
-    ITB_WRAPPER_CIPHER_CHACHA20,
     ITB_WRAPPER_CIPHER_SIPHASH24,
+    ITB_WRAPPER_CIPHER_CHACHA20,
 };
-static const char *const CIPHER_NAMES[] = { "aescmac", "chacha20", "siphash24" };
-#define CIPHER_COUNT 3
+static const char *const CIPHER_NAMES[] = {
+    "areion256", "areion512", "blake2b256", "blake2b512", "blake2s",
+    "blake3", "aescmac", "siphash24", "chacha20",
+};
+#define CIPHER_COUNT 9
 
 #define WRAPPER_PAYLOAD_BYTES BENCH_PAYLOAD_16MB
 #define MESSAGE_PAYLOAD_BYTES BENCH_PAYLOAD_16MB
@@ -69,9 +82,10 @@ static const char *const CIPHER_NAMES[] = { "aescmac", "chacha20", "siphash24" }
 
 /* ----- Per-case context registry ----------------------------------- */
 /*
- * The bench harness has no per-case cleanup hook; the registry below
- * owns every allocated context, encryptor, payload buffer, etc. and
- * frees them all in ctx_free_all() once run_all has returned.
+ * Per-case context registry. Each case's context — encryptor, payload
+ * buffer, pristine wire, working buffer, outer key — is allocated
+ * through ctx_new() and freed by ctx_free_all() immediately after
+ * that case is measured.
  */
 typedef struct case_ctx case_ctx_t;
 typedef void (*case_cleanup_fn)(case_ctx_t *c);
@@ -196,7 +210,7 @@ static itb_encryptor_t *new_encryptor(int mode, int with_mac)
 /* ----- Wrapper Only sub-benches ----------------------------------- */
 /*
  * Pure outer cipher cost — no ITB call. Two variants per cipher:
- * Wrap (alloc) and WrapInPlace (zero alloc).
+ * Wrap (alloc) and WrapInPlace (no output-buffer alloc).
  *
  * Each iter performs one wrap + one unwrap (encrypt + decrypt timed
  * together, mirroring the Go BenchmarkWrapperOnlyWrap / InPlace
@@ -847,78 +861,34 @@ static bench_case_t make_stream_decrypt_case(int mode, int auth,
     return bc;
 }
 
-/* ----- Case-list assembly ------------------------------------------ */
+/* ----- Lazy descriptor --------------------------------------------- */
 
-#define TOTAL_CASES 102
+/* One lazy descriptor: label strings (interned literals + cipher index)
+ * so the name can be reconstructed without holding heap memory, plus the
+ * knobs needed to call the right make_* factory.  Building all 306
+ * descriptors is O(1) in payload memory; each factory is invoked just
+ * before timing and its context freed immediately after. */
 
-static size_t build_cases(bench_case_t *cases)
-{
-    size_t idx = 0;
+/* Case kind selector. */
+#define KIND_WRAP_WRAP    0
+#define KIND_WRAP_INPLACE 1
+#define KIND_MSG_ENC      2
+#define KIND_MSG_DEC      3
+#define KIND_STR_ENC      4
+#define KIND_STR_DEC      5
 
-    /* Wrapper Only — 6 cases. */
-    for (int ci = 0; ci < CIPHER_COUNT; ci++) {
-        cases[idx++] = make_wrapper_only_wrap_case(CIPHERS[ci], CIPHER_NAMES[ci]);
-        cases[idx++] = make_wrapper_only_inplace_case(CIPHERS[ci], CIPHER_NAMES[ci]);
-    }
+typedef struct {
+    int             kind;
+    int             ci;       /* CIPHERS / CIPHER_NAMES index */
+    int             mode;     /* 1=Single, 3=Triple (msg/stream only) */
+    int             auth;     /* 0=NoMAC, 1=Auth (msg/stream only) */
+    stream_mode_t   stream_k; /* stream kind (stream only) */
+    const char     *label;    /* interned literal, e.g. "easy-nomac" */
+} lazy_desc_t;
 
-    /* Message — 4 modes × 3 ciphers × 2 dirs × {Single, Triple} = 48. */
-    static const struct {
-        const char *label;
-        int auth;
-    } MSG_LABELS[] = {
-        { "easy-nomac",      0 },
-        { "easy-auth",       1 },
-        { "lowlevel-nomac",  0 },
-        { "lowlevel-auth",   1 },
-    };
-    static const int MODES[] = { 1, 3 };
-    for (size_t mi = 0; mi < sizeof(MODES) / sizeof(MODES[0]); mi++) {
-        int mode = MODES[mi];
-        for (size_t li = 0; li < sizeof(MSG_LABELS) / sizeof(MSG_LABELS[0]); li++) {
-            for (int ci = 0; ci < CIPHER_COUNT; ci++) {
-                cases[idx++] = make_message_encrypt_case(
-                    mode, MSG_LABELS[li].auth,
-                    CIPHERS[ci], CIPHER_NAMES[ci], MSG_LABELS[li].label);
-                cases[idx++] = make_message_decrypt_case(
-                    mode, MSG_LABELS[li].auth,
-                    CIPHERS[ci], CIPHER_NAMES[ci], MSG_LABELS[li].label);
-            }
-        }
-    }
-
-    /* Streaming — 4 modes × 3 ciphers × 2 dirs × {Single, Triple} = 48.
-     * In the C binding the AEAD-Easy / AEAD-Low-Level pair both route
-     * through the same itb_encryptor_stream_encrypt_auth call, and
-     * the No MAC Easy / Low-Level pair both go through the User-Driven
-     * Loop with itb_encryptor_encrypt — so the four labels exercise
-     * the same inner code paths but emit distinct case names so the
-     * surface count matches the cross-binding 24-per-mode total. */
-    static const struct {
-        const char *label;
-        stream_mode_t kind;
-        int auth;
-    } STREAM_LABELS[] = {
-        { "aead-easy-io",             STREAM_AEAD_EASY_IO,             1 },
-        { "aead-lowlevel-io",         STREAM_AEAD_LOWLEVEL_IO,         1 },
-        { "noaead-easy-userloop",     STREAM_NOAEAD_EASY_USERLOOP,     0 },
-        { "noaead-lowlevel-userloop", STREAM_NOAEAD_LOWLEVEL_USERLOOP, 0 },
-    };
-    for (size_t mi = 0; mi < sizeof(MODES) / sizeof(MODES[0]); mi++) {
-        int mode = MODES[mi];
-        for (size_t li = 0; li < sizeof(STREAM_LABELS) / sizeof(STREAM_LABELS[0]); li++) {
-            for (int ci = 0; ci < CIPHER_COUNT; ci++) {
-                cases[idx++] = make_stream_encrypt_case(
-                    mode, STREAM_LABELS[li].auth, STREAM_LABELS[li].kind,
-                    CIPHERS[ci], CIPHER_NAMES[ci], STREAM_LABELS[li].label);
-                cases[idx++] = make_stream_decrypt_case(
-                    mode, STREAM_LABELS[li].auth, STREAM_LABELS[li].kind,
-                    CIPHERS[ci], CIPHER_NAMES[ci], STREAM_LABELS[li].label);
-            }
-        }
-    }
-
-    return idx;
-}
+/* ----- Total factory count ----------------------------------------- */
+/* 2 wrapper-only + 16 message + 16 streaming = 34 per cipher; ×9 = 306. */
+#define TOTAL_CASES (34 * CIPHER_COUNT)
 
 int main(void)
 {
@@ -933,19 +903,180 @@ int main(void)
         return 1;
     }
 
-    printf("# wrapper bench primitive=%s key_bits=%d mac=%s "
-           "ciphers=3 cases=%d nonce_bits=%d workers=auto\n",
-           BENCH_PRIMITIVE, BENCH_KEY_BITS, BENCH_MAC_NAME,
-           TOTAL_CASES, nonce_bits);
-    fflush(stdout);
+    /* ----- Build cheap descriptor list (no payload allocs) ---------- */
 
-    bench_case_t cases[TOTAL_CASES];
-    size_t n = build_cases(cases);
-    if (n != TOTAL_CASES) {
-        fprintf(stderr, "build_cases yielded %zu, expected %d\n", n, TOTAL_CASES);
+    static const struct { const char *label; int auth; } MSG_LABELS[] = {
+        { "easy-nomac",      0 },
+        { "easy-auth",       1 },
+        { "lowlevel-nomac",  0 },
+        { "lowlevel-auth",   1 },
+    };
+    static const struct { const char *label; stream_mode_t kind; int auth; }
+    STREAM_LABELS[] = {
+        { "aead-easy-io",             STREAM_AEAD_EASY_IO,             1 },
+        { "aead-lowlevel-io",         STREAM_AEAD_LOWLEVEL_IO,         1 },
+        { "noaead-easy-userloop",     STREAM_NOAEAD_EASY_USERLOOP,     0 },
+        { "noaead-lowlevel-userloop", STREAM_NOAEAD_LOWLEVEL_USERLOOP, 0 },
+    };
+    static const int MODES[] = { 1, 3 };
+
+    lazy_desc_t *descs =
+        (lazy_desc_t *) calloc(TOTAL_CASES, sizeof(lazy_desc_t));
+    if (descs == NULL) {
+        fprintf(stderr, "descriptor alloc failed\n");
         return 1;
     }
-    run_all(cases, n);
-    ctx_free_all();
+    size_t n_descs = 0;
+
+    /* Wrapper Only — 2 per cipher. */
+    for (int ci = 0; ci < CIPHER_COUNT; ci++) {
+        descs[n_descs++] = (lazy_desc_t){ KIND_WRAP_WRAP,    ci, 0, 0, 0, NULL };
+        descs[n_descs++] = (lazy_desc_t){ KIND_WRAP_INPLACE, ci, 0, 0, 0, NULL };
+    }
+
+    /* Message — 2 ouroboros × 4 labels × every cipher × 2 dirs. */
+    for (size_t mi = 0; mi < sizeof(MODES)/sizeof(MODES[0]); mi++) {
+        int mode = MODES[mi];
+        for (size_t li = 0; li < sizeof(MSG_LABELS)/sizeof(MSG_LABELS[0]); li++) {
+            for (int ci = 0; ci < CIPHER_COUNT; ci++) {
+                descs[n_descs++] = (lazy_desc_t){
+                    KIND_MSG_ENC, ci, mode, MSG_LABELS[li].auth, 0, MSG_LABELS[li].label
+                };
+                descs[n_descs++] = (lazy_desc_t){
+                    KIND_MSG_DEC, ci, mode, MSG_LABELS[li].auth, 0, MSG_LABELS[li].label
+                };
+            }
+        }
+    }
+
+    /* Streaming — 2 ouroboros × 4 labels × every cipher × 2 dirs. */
+    for (size_t mi = 0; mi < sizeof(MODES)/sizeof(MODES[0]); mi++) {
+        int mode = MODES[mi];
+        for (size_t li = 0; li < sizeof(STREAM_LABELS)/sizeof(STREAM_LABELS[0]); li++) {
+            for (int ci = 0; ci < CIPHER_COUNT; ci++) {
+                descs[n_descs++] = (lazy_desc_t){
+                    KIND_STR_ENC, ci, mode, STREAM_LABELS[li].auth,
+                    STREAM_LABELS[li].kind, STREAM_LABELS[li].label
+                };
+                descs[n_descs++] = (lazy_desc_t){
+                    KIND_STR_DEC, ci, mode, STREAM_LABELS[li].auth,
+                    STREAM_LABELS[li].kind, STREAM_LABELS[li].label
+                };
+            }
+        }
+    }
+
+    if (n_descs != TOTAL_CASES) {
+        fprintf(stderr, "descriptor build yielded %zu, expected %d\n",
+                n_descs, TOTAL_CASES);
+        free(descs);
+        return 1;
+    }
+
+    /* ----- Filter + count ------------------------------------------- */
+
+    const char *flt = env_filter();
+    double min_seconds = env_min_seconds();
+
+    /* Build a temporary name for each descriptor to evaluate the filter.
+     * We keep only the selected indices (no heap-owned name yet). */
+    size_t *sel_idx = (size_t *) malloc(n_descs * sizeof(size_t));
+    if (sel_idx == NULL) {
+        fprintf(stderr, "sel_idx alloc failed\n");
+        free(descs);
+        return 1;
+    }
+    size_t n_sel = 0;
+    for (size_t i = 0; i < n_descs; i++) {
+        lazy_desc_t *d = &descs[i];
+        const char *mode_name = (d->mode == 1 || d->mode == 0) ? "Single" : "Triple";
+        char tmp[256];
+        switch (d->kind) {
+        case KIND_WRAP_WRAP:
+            snprintf(tmp, sizeof(tmp), "BenchmarkWrapperOnlyWrap/%s", CIPHER_NAMES[d->ci]);
+            break;
+        case KIND_WRAP_INPLACE:
+            snprintf(tmp, sizeof(tmp), "BenchmarkWrapperOnlyInPlace/%s", CIPHER_NAMES[d->ci]);
+            break;
+        case KIND_MSG_ENC:
+            snprintf(tmp, sizeof(tmp), "BenchmarkMessage%s/%s/%s/encrypt",
+                     mode_name, d->label, CIPHER_NAMES[d->ci]);
+            break;
+        case KIND_MSG_DEC:
+            snprintf(tmp, sizeof(tmp), "BenchmarkMessage%s/%s/%s/decrypt",
+                     mode_name, d->label, CIPHER_NAMES[d->ci]);
+            break;
+        case KIND_STR_ENC:
+            snprintf(tmp, sizeof(tmp), "BenchmarkStreaming%s/%s/%s/encrypt",
+                     mode_name, d->label, CIPHER_NAMES[d->ci]);
+            break;
+        case KIND_STR_DEC:
+            snprintf(tmp, sizeof(tmp), "BenchmarkStreaming%s/%s/%s/decrypt",
+                     mode_name, d->label, CIPHER_NAMES[d->ci]);
+            break;
+        default:
+            tmp[0] = '\0';
+        }
+        if (flt == NULL || strstr(tmp, flt) != NULL)
+            sel_idx[n_sel++] = i;
+    }
+
+    if (n_sel == 0) {
+        fprintf(stderr, "no bench cases match filter %s\n",
+                flt == NULL ? "<unset>" : flt);
+        free(sel_idx);
+        free(descs);
+        return 0;
+    }
+
+    printf("# wrapper bench primitive=%s key_bits=%d mac=%s "
+           "ciphers=%d cases=%zu nonce_bits=%d workers=auto\n",
+           BENCH_PRIMITIVE, BENCH_KEY_BITS, BENCH_MAC_NAME,
+           CIPHER_COUNT, n_descs, nonce_bits);
+    printf("# benchmarks=%zu payload_bytes=%zu min_seconds=%g\n",
+           n_sel, (size_t) MESSAGE_PAYLOAD_BYTES, min_seconds);
+    fflush(stdout);
+
+    /* ----- Lazy measure loop --------------------------------------- */
+    for (size_t s = 0; s < n_sel; s++) {
+        lazy_desc_t *d = &descs[sel_idx[s]];
+        bench_case_t bc;
+
+        switch (d->kind) {
+        case KIND_WRAP_WRAP:
+            bc = make_wrapper_only_wrap_case(CIPHERS[d->ci], CIPHER_NAMES[d->ci]);
+            break;
+        case KIND_WRAP_INPLACE:
+            bc = make_wrapper_only_inplace_case(CIPHERS[d->ci], CIPHER_NAMES[d->ci]);
+            break;
+        case KIND_MSG_ENC:
+            bc = make_message_encrypt_case(d->mode, d->auth,
+                     CIPHERS[d->ci], CIPHER_NAMES[d->ci], d->label);
+            break;
+        case KIND_MSG_DEC:
+            bc = make_message_decrypt_case(d->mode, d->auth,
+                     CIPHERS[d->ci], CIPHER_NAMES[d->ci], d->label);
+            break;
+        case KIND_STR_ENC:
+            bc = make_stream_encrypt_case(d->mode, d->auth, d->stream_k,
+                     CIPHERS[d->ci], CIPHER_NAMES[d->ci], d->label);
+            break;
+        case KIND_STR_DEC:
+            bc = make_stream_decrypt_case(d->mode, d->auth, d->stream_k,
+                     CIPHERS[d->ci], CIPHER_NAMES[d->ci], d->label);
+            break;
+        default:
+            fprintf(stderr, "unknown kind %d\n", d->kind);
+            continue;
+        }
+
+        bench_measure_one(&bc, min_seconds);
+        free(bc.name);
+        bc.name = NULL;
+        ctx_free_all(); /* release encryptor / payload / wire for this case */
+    }
+
+    free(sel_idx);
+    free(descs);
     return 0;
 }

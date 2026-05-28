@@ -15,6 +15,11 @@
  *   ITB_NONCE_BITS    process-wide nonce width override; valid values
  *                     128 / 256 / 512. Maps to itb_set_nonce_bits
  *                     before any encryptor is constructed. Default 128.
+ *   ITB_LOCKBATCH     non-empty / non-`0` enables Lock Batch (performance
+ *                     Lock Soup mode); set with ITB_LOCKSEED. Every Easy
+ *                     Mode encryptor additionally calls
+ *                     itb_encryptor_set_lock_batch(e, 1). Inert unless
+ *                     Lock Soup is engaged via ITB_LOCKSEED. Default off.
  *   ITB_LOCKSEED      when set to a non-empty / non-`0` value, every
  *                     Easy Mode encryptor in this run calls
  *                     itb_encryptor_set_lock_seed(e, 1). The Go side's
@@ -46,8 +51,7 @@
 
 /* Canonical PRF-grade primitive order. Mirrored verbatim across every
  * binding's bench harness so cross-language diff comparisons align
- * row-for-row. Per CLAUDE.md "binding-side canonical order" exception
- * under "Primitive ordering ...". The three below-spec lab primitives
+ * row-for-row. The three below-spec lab primitives
  * (CRC128, FNV-1a, MD5) are not exposed through the libitb registry
  * and are absent here by construction. */
 extern const char *const PRIMITIVES_CANONICAL[];
@@ -73,6 +77,11 @@ typedef struct bench_case {
  * default_value on missing / invalid input (with a stderr diagnostic
  * for the invalid case). */
 int env_nonce_bits(int default_value);
+
+/* Returns 1 when ITB_LOCKBATCH is set to a non-empty / non-`0` value, 0
+ * otherwise. Enables the Lock Batch performance Lock Soup mode; inert
+ * unless Lock Soup is engaged via ITB_LOCKSEED. */
+int env_lock_batch(void);
 
 /* Returns 1 when ITB_LOCKSEED is set to a non-empty / non-`0` value, 0
  * otherwise. */
@@ -113,5 +122,13 @@ char *bench_strdup_fmt(const char *fmt, ...);
  * Each case's `name` field is freed by run_all before return; the
  * caller must not reference it after the call returns. */
 void run_all(bench_case_t *cases, size_t n_cases);
+
+/* Measure a single pre-built case at `min_seconds` threshold and emit
+ * one Go-bench-style report line.  Used by the lazy bench runner in
+ * bench_wrapper.c — the caller filters and prints the header line
+ * itself; this function handles only the measurement + output for one
+ * case.  The case's `name` field is NOT freed by this function; the
+ * caller owns the lifetime of the case. */
+void bench_measure_one(bench_case_t *c, double min_seconds);
 
 #endif /* ITB_C_BENCH_COMMON_H */

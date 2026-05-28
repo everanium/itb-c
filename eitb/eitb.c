@@ -8,8 +8,7 @@
  * pair for Non-AEAD streaming. The Non-AEAD streaming arm is the
  * User-Driven Loop only.
  *
- * Matrix: 8 examples × 3 outer ciphers (aes / chacha / siphash) =
- * 24 PASS/FAIL cells.
+ * Matrix: 8 examples × outer ciphers.
  *
  * Examples covered:
  *
@@ -61,12 +60,12 @@
 static const itb_wrapper_cipher_t CIPHERS[] = {
     ITB_WRAPPER_CIPHER_AREION_256,
     ITB_WRAPPER_CIPHER_AREION_512,
-    ITB_WRAPPER_CIPHER_SIPHASH24,
-    ITB_WRAPPER_CIPHER_AES_128_CTR,
     ITB_WRAPPER_CIPHER_BLAKE2B_256,
     ITB_WRAPPER_CIPHER_BLAKE2B_512,
     ITB_WRAPPER_CIPHER_BLAKE2S,
     ITB_WRAPPER_CIPHER_BLAKE3,
+    ITB_WRAPPER_CIPHER_AES_128_CTR,
+    ITB_WRAPPER_CIPHER_SIPHASH24,
     ITB_WRAPPER_CIPHER_CHACHA20,
 };
 #define CIPHER_COUNT (sizeof(CIPHERS) / sizeof(CIPHERS[0]))
@@ -201,6 +200,7 @@ static int apply_global_knobs(void)
     if (itb_set_barrier_fill(4) != ITB_OK) return -1;
     if (itb_set_bit_soup(1) != ITB_OK) return -1;
     if (itb_set_lock_soup(1) != ITB_OK) return -1;
+    if (itb_set_lock_batch(1) != ITB_OK) return -1;
     return 0;
 }
 
@@ -217,6 +217,7 @@ static int make_easy_encryptor(int with_mac, int key_bits, itb_encryptor_t **out
     if (itb_encryptor_set_barrier_fill(*out, 4) != ITB_OK) return -1;
     if (itb_encryptor_set_bit_soup(*out, 1) != ITB_OK) return -1;
     if (itb_encryptor_set_lock_soup(*out, 1) != ITB_OK) return -1;
+    if (itb_encryptor_set_lock_batch(*out, 1) != ITB_OK) return -1;
     return 0;
 }
 
@@ -1483,7 +1484,7 @@ static int contains_substring(const char *haystack, const char *needle)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "usage: %s [--example SUBSTR] [--cipher aes|chacha|siphash] [-v]\n",
+            "usage: %s [--example SUBSTR] [--cipher ciphername] [-v]\n",
             prog);
 }
 

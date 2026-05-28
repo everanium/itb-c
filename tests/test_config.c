@@ -35,6 +35,15 @@ START_TEST(test_config_lock_soup_roundtrip)
 }
 END_TEST
 
+START_TEST(test_config_lock_batch_roundtrip)
+{
+    int orig = itb_get_lock_batch();
+    ck_assert_int_eq(itb_set_lock_batch(1), ITB_OK);
+    ck_assert_int_eq(itb_get_lock_batch(), 1);
+    ck_assert_int_eq(itb_set_lock_batch(orig), ITB_OK);
+}
+END_TEST
+
 START_TEST(test_config_max_workers_roundtrip)
 {
     int orig = itb_get_max_workers();
@@ -83,6 +92,7 @@ int main(void)
     tcase_set_timeout(tc, 30);
     tcase_add_test(tc, test_config_bit_soup_roundtrip);
     tcase_add_test(tc, test_config_lock_soup_roundtrip);
+    tcase_add_test(tc, test_config_lock_batch_roundtrip);
     tcase_add_test(tc, test_config_max_workers_roundtrip);
     tcase_add_test(tc, test_config_nonce_bits_validation);
     tcase_add_test(tc, test_config_barrier_fill_validation);
