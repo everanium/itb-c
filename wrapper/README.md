@@ -45,7 +45,7 @@ No length-prefix or other framing byte appears in cleartext on the wire in any w
 | BLAKE3 in CTR mode | `ITB_WRAPPER_CIPHER_BLAKE3` | `"blake3"` | 32 B | 16 B | Keyed BLAKE3 PRF in CTR mode. Sound under standard PRF assumption. |
 | AES-128-CTR | `ITB_WRAPPER_CIPHER_AES_128_CTR` | `"aescmac"` | 16 B | 16 B | stdlib `crypto/aes` + `crypto/cipher.NewCTR`. AES-NI accelerated. |
 | SipHash-2-4 in CTR mode | `ITB_WRAPPER_CIPHER_SIPHASH24` | `"siphash24"` | 16 B | 16 B | `github.com/dchest/siphash` PRF. Custom CTR construction; sound under standard PRF assumption. |
-| ChaCha20 (RFC8439) | `ITB_WRAPPER_CIPHER_CHACHA20` | `"chacha20"` | 32 B | 12 B | `golang.org/x/crypto/chacha20`. No AES-NI dependency. |
+| ChaCha20 (RFC 8439) | `ITB_WRAPPER_CIPHER_CHACHA20` | `"chacha20"` | 32 B | 12 B | `golang.org/x/crypto/chacha20`. No AES-NI dependency. |
 
 The SipHash-CTR construction:
 - 16-byte SipHash key = wrapper key.
