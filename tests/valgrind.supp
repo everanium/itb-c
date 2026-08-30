@@ -1,0 +1,141 @@
+# Valgrind suppressions for the ITB C binding test suite.
+#
+# Every rule matches errors whose faulting frame lies inside
+# libitb.so — the Go runtime manages its own stacks and heap in ways
+# memcheck cannot model (stack copying, memclrNoHeapPointers over
+# arena memory, uninitialised spill slots around asm kernels), so
+# memcheck reports large volumes of Cond / Value / Addr noise from
+# Go-side code. The binding's own C frames are never suppressed: an
+# error whose faulting frame is in libitb_c.a, a test binary, or
+# libc still fails the run.
+
+{
+   go-runtime-cond
+   Memcheck:Cond
+   obj:*/libitb.so
+}
+{
+   go-runtime-value1
+   Memcheck:Value1
+   obj:*/libitb.so
+}
+{
+   go-runtime-value2
+   Memcheck:Value2
+   obj:*/libitb.so
+}
+{
+   go-runtime-value4
+   Memcheck:Value4
+   obj:*/libitb.so
+}
+{
+   go-runtime-value8
+   Memcheck:Value8
+   obj:*/libitb.so
+}
+{
+   go-runtime-value16
+   Memcheck:Value16
+   obj:*/libitb.so
+}
+{
+   go-runtime-addr1
+   Memcheck:Addr1
+   obj:*/libitb.so
+}
+{
+   go-runtime-addr2
+   Memcheck:Addr2
+   obj:*/libitb.so
+}
+{
+   go-runtime-addr4
+   Memcheck:Addr4
+   obj:*/libitb.so
+}
+{
+   go-runtime-addr8
+   Memcheck:Addr8
+   obj:*/libitb.so
+}
+{
+   go-runtime-addr16
+   Memcheck:Addr16
+   obj:*/libitb.so
+}
+{
+   go-runtime-addr32
+   Memcheck:Addr32
+   obj:*/libitb.so
+}
+{
+   go-runtime-value32
+   Memcheck:Value32
+   obj:*/libitb.so
+}
+{
+   go-runtime-getrandom
+   Memcheck:Param
+   getrandom(cpu)
+   obj:*/libitb.so
+}
+
+# Bytes libitb writes into caller buffers inherit an "undefined"
+# definedness bit from the untracked Go heap, so a test comparing
+# decrypted output against the expected payload trips Cond inside the
+# redirected memcmp/bcmp. The comparison itself proves the bytes are
+# meaningful; only the test binaries' own comparison frames are
+# suppressed.
+{
+   itb-output-definedness-bcmp
+   Memcheck:Cond
+   fun:bcmp
+   obj:*/tests/build/*
+}
+{
+   itb-output-definedness-memcmp
+   Memcheck:Cond
+   fun:memcmp*
+   obj:*/tests/build/*
+}
+
+# Same definedness propagation from Go-written out-params reaches
+# binding-side branches: cipher_call reads the length out-param the
+# FFI wrote and branches on `n < cap` for the shrink path; the test
+# main branches on length / status for its own asserts. Memcheck's
+# frame-scoped rules cannot match "Cond on data written by Go",
+# only "Cond fired from a Go frame", so the failure surfaces with
+# the binding frame on top. These rules restore the intended
+# posture — binding-own logic bugs would still surface as Cond
+# from other frames or as Value/Addr in the same frames, which
+# neither of these two suppressions covers.
+{
+   itb-output-definedness-cipher-call-mangled
+   Memcheck:Cond
+   ...
+   fun:_ZN3itb*cipher_call*
+}
+{
+   itb-output-definedness-cipher-call-unmangled
+   Memcheck:Cond
+   fun:cipher_call
+}
+{
+   itb-output-definedness-vector-resize
+   Memcheck:Cond
+   ...
+   fun:_ZNSt6vectorIhSaIhEE6resizeE*
+}
+{
+   itb-output-definedness-vector-shrink
+   Memcheck:Cond
+   ...
+   fun:_ZNSt6vectorIhSaIhEE12shrink_to_fitEv
+}
+{
+   itb-output-definedness-test-main
+   Memcheck:Cond
+   fun:main
+   obj:*/tests/build/*
+}

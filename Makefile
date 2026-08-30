@@ -1,119 +1,123 @@
-# Makefile — build for the ITB C binding.
+# Makefile — build for the ITB C binding (thin Triple Pipeline proxy).
 #
 # Targets:
-#   all (default): builds build/libitb_c.a (the static binding library).
-#   tests:         compiles every tests/test_*.c into tests/build/test_*.
-#   test:          builds + runs every test (sequential).
-#   bench:         compiles bench/bench.c into bench/build/bench.
-#   clean:         removes every generated artefact.
-#
-# The Makefile is intentionally light — POSIX inference rules only, no
-# pattern rules. Build output is split: object files live next to their
-# .c sources (POSIX `.c.o` inference rule), the static library and test
-# binaries land under build/ / tests/build/ / bench/build/.
+#   all (default):  build/libitb_c.a + build/libitb_c.so + every test binary.
+#   libitb.so:      rebuilds the underlying Go shared library into ITB_DIST.
+#   test:           builds + runs every tests/test_*.c binary (sequential).
+#   test-asan:      the test suite under AddressSanitizer (separate build dir).
+#   test-ubsan:     the test suite under UndefinedBehaviorSanitizer.
+#   test-valgrind:  the test suite under valgrind --leak-check=full.
+#   eitb:           builds the eitb CLI at eitb/eitb.
+#   bench:          builds + runs the benches/bench_*.c micro-benchmarks.
+#   clean:          removes every generated artefact.
 #
 # Variables (override on the command line):
-#   CC        C compiler             (default: cc)
-#   CSTD      C standard             (default: c17)
-#   OPT       optimisation flags     (default: -O2)
-#   ITB_DIST  path to libitb.so dir  (default: ../../dist/linux-amd64)
+#   CC        C compiler                  (default: cc)
+#   ITB_DIST  path to libitb.so + .h dir  (default: ../../dist/linux-amd64)
 
-CC       ?= cc
-CSTD     ?= c17
-OPT      ?= -O2
-WARN      = -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion \
-            -Wstrict-prototypes -Wmissing-prototypes
-ITB_DIST ?= ../../dist/linux-amd64
+CC         ?= cc
+ITB_DIST   ?= ../../dist/linux-amd64
+BUILD      ?= build
+TESTBUILD  ?= tests/build
+BENCHBUILD ?= benches/build
+SANFLAGS   ?=
+FORTIFY    ?= -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
 
-CFLAGS   = -std=$(CSTD) $(OPT) $(WARN) -fPIC -Iinclude -Isrc
-LDFLAGS  = -L$(ITB_DIST) -Wl,-rpath,$(ITB_DIST)
+WARN = -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion \
+       -Wformat=2 -Wnull-dereference -Wmissing-prototypes -Wstrict-prototypes \
+       -Wcast-align -Werror
 
-# Underlying libitb (Go-built c-shared) link.
-LIBITB   = -litb
+CFLAGS  = -std=c11 -O2 -g $(WARN) $(FORTIFY) -fstack-protector-strong -fPIC \
+          -Iinclude -Isrc -isystem $(ITB_DIST) $(SANFLAGS)
+RPATH   = $(abspath $(ITB_DIST))
+LDFLAGS = -L$(ITB_DIST) -Wl,-rpath,$(RPATH) $(SANFLAGS)
+LIBITB  = -litb
 
-# ---- Library sources (Phase 1-4 today) ------------------------------
-LIB_SRCS = \
-    src/errors.c \
-    src/registry.c \
-    src/seed.c \
-    src/mac.c \
-    src/cipher.c \
-    src/encryptor.c \
-    src/blob.c \
-    src/streams.c \
-    src/wrapper.c
-LIB_OBJS = $(LIB_SRCS:.c=.o)
+# ---- Library ---------------------------------------------------------
+LIB_SRCS = src/itb_status.c src/itb_opts.c src/itb_pipeline.c src/itb_stream.c
+LIB_OBJS = $(patsubst src/%.c,$(BUILD)/%.o,$(LIB_SRCS))
+LIB_HDRS = include/itb.h src/internal.h
 
-# ---- Default target --------------------------------------------------
-all: build/libitb_c.a
+all: $(BUILD)/libitb_c.a $(BUILD)/libitb_c.so tests
 
-# POSIX inference rule for *.c -> *.o.
-.c.o:
+$(BUILD)/%.o: src/%.c $(LIB_HDRS)
+	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-build/libitb_c.a: $(LIB_OBJS)
-	mkdir -p build
+$(BUILD)/libitb_c.a: $(LIB_OBJS)
 	$(AR) rcs $@ $(LIB_OBJS)
 
-# ---- Tests (Phase 5 wires individual test_*.c targets here) ---------
-# Auto-discover test sources with shell glob; each test_X.c becomes its
-# own binary under tests/build/test_X linked against build/libitb_c.a +
-# the system check unit-testing framework.
+$(BUILD)/libitb_c.so: $(LIB_OBJS)
+	$(CC) -shared $(LIB_OBJS) -o $@ $(LDFLAGS) $(LIBITB)
+
+# ---- Underlying Go shared library -----------------------------------
+libitb.so:
+	cd ../.. && go build -trimpath -buildmode=c-shared \
+	    -o dist/linux-amd64/libitb.so ./cmd/cshared
+
+# ---- Tests -----------------------------------------------------------
+# Each tests/test_*.c becomes its own binary linked against the static
+# library (explicit archive path so the .so next to it is not picked)
+# plus libitb.so via embedded RPATH.
 TEST_SRCS := $(wildcard tests/test_*.c)
-TEST_BINS := $(patsubst tests/test_%.c,tests/build/test_%,$(TEST_SRCS))
+TEST_BINS := $(patsubst tests/test_%.c,$(TESTBUILD)/test_%,$(TEST_SRCS))
 
-CHECK_CFLAGS := $(shell pkg-config --cflags check 2>/dev/null)
-CHECK_LIBS   := $(shell pkg-config --libs   check 2>/dev/null)
+tests: $(BUILD)/libitb_c.a $(TEST_BINS)
 
-tests: build/libitb_c.a $(TEST_BINS)
-
-# One per-test pattern rule; safe because each test is self-contained.
-tests/build/test_%: tests/test_%.c build/libitb_c.a
-	mkdir -p tests/build
-	$(CC) $(CFLAGS) $(CHECK_CFLAGS) $< -o $@ \
-	    -Lbuild -litb_c $(LDFLAGS) $(LIBITB) $(CHECK_LIBS)
+$(TESTBUILD)/test_%: tests/test_%.c tests/test_util.h $(BUILD)/libitb_c.a
+	@mkdir -p $(TESTBUILD)
+	$(CC) $(CFLAGS) -Itests $< $(BUILD)/libitb_c.a -o $@ $(LDFLAGS) $(LIBITB)
 
 test: tests
-	@./run_tests.sh
+	@fail=0; \
+	for t in $(TEST_BINS); do \
+	    if "$$t" >/dev/null 2>&1; then \
+	        printf '  ok   %s\n' "$$t"; \
+	    else \
+	        printf '  FAIL %s\n' "$$t"; "$$t"; fail=1; \
+	    fi; \
+	done; \
+	exit $$fail
 
-# ---- Bench (Phase 6) ------------------------------------------------
-# Each bench/bench_*.c becomes its own binary linked against
-# build/libitb_c.a + bench/common.c (shared timing harness, env-var
-# parsing, output line emission). The wildcard glob `bench/bench_*.c`
-# excludes bench/common.c, which is linked into every bench binary
-# rather than producing one of its own.
-BENCH_SRCS    := $(wildcard bench/bench_*.c)
-BENCH_BINS    := $(patsubst bench/%.c,bench/build/%,$(BENCH_SRCS))
-BENCH_COMMON  := bench/common.c
-BENCH_HEADERS := bench/common.h
+test-asan:
+	$(MAKE) BUILD=build/asan TESTBUILD=tests/build/asan FORTIFY= \
+	    SANFLAGS="-fsanitize=address -fno-omit-frame-pointer" test
 
-bench: build/libitb_c.a $(BENCH_BINS)
+test-ubsan:
+	$(MAKE) BUILD=build/ubsan TESTBUILD=tests/build/ubsan FORTIFY= \
+	    SANFLAGS="-fsanitize=undefined -fno-sanitize-recover=all" test
 
-bench/build/%: bench/%.c $(BENCH_COMMON) $(BENCH_HEADERS) build/libitb_c.a
-	mkdir -p bench/build
-	$(CC) $(CFLAGS) -Ibench $< $(BENCH_COMMON) -o $@ \
-	    -Lbuild -litb_c $(LDFLAGS) $(LIBITB)
+# The suppression file silences memcheck noise whose faulting frame
+# lies inside libitb.so (Go-runtime stack/heap management memcheck
+# cannot model); binding-side C frames are never suppressed.
+test-valgrind: tests
+	@for t in $(TEST_BINS); do \
+	    echo "==> valgrind $$t"; \
+	    valgrind --leak-check=full --error-exitcode=1 \
+	        --errors-for-leak-kinds=definite \
+	        --suppressions=tests/valgrind.supp "$$t" >/dev/null || exit 1; \
+	done
 
-# ---- Eitb (Phase 7) -------------------------------------------------
-# Wrapper × ITB matrix runner. One binary at bin/eitb that links
-# eitb/eitb.c + eitb/sha256.c against build/libitb_c.a + libitb.so.
-# Mirrors the per-binding eitb tools (rust examples/eitb.rs, python
-# eitb/eitb.py, etc.) — runs every (example × cipher) cell and prints
-# `=== Summary: 24 PASS, 0 FAIL ===`.
-EITB_SRCS    := eitb/eitb.c eitb/sha256.c
-EITB_HEADERS := eitb/sha256.h
-EITB_BIN     := bin/eitb
+# ---- Eitb CLI --------------------------------------------------------
+eitb: eitb/eitb
 
-eitb: $(EITB_BIN)
+eitb/eitb: eitb/eitb.c $(BUILD)/libitb_c.a
+	$(CC) $(CFLAGS) eitb/eitb.c $(BUILD)/libitb_c.a -o $@ $(LDFLAGS) $(LIBITB)
 
-$(EITB_BIN): $(EITB_SRCS) $(EITB_HEADERS) build/libitb_c.a
-	mkdir -p bin
-	$(CC) $(CFLAGS) -Ieitb $(EITB_SRCS) -o $@ \
-	    -Lbuild -litb_c $(LDFLAGS) $(LIBITB)
+# ---- Benches ---------------------------------------------------------
+BENCH_SRCS := $(wildcard benches/bench_*.c)
+BENCH_BINS := $(patsubst benches/bench_%.c,$(BENCHBUILD)/bench_%,$(BENCH_SRCS))
+
+$(BENCHBUILD)/bench_%: benches/bench_%.c benches/bench_util.h $(BUILD)/libitb_c.a
+	@mkdir -p $(BENCHBUILD)
+	$(CC) $(CFLAGS) -Ibenches $< $(BUILD)/libitb_c.a -o $@ $(LDFLAGS) $(LIBITB)
+
+bench: $(BENCH_BINS)
+	@for b in $(BENCH_BINS); do "$$b" || exit 1; done
 
 # ---- Cleanup ---------------------------------------------------------
 clean:
-	rm -f src/*.o
-	rm -rf build tests/build bench/build bin
+	rm -rf $(BUILD) tests/build benches/build eitb/eitb
 
-.PHONY: all tests test bench eitb clean
+.PHONY: all libitb.so tests test test-asan test-ubsan test-valgrind \
+        eitb bench clean

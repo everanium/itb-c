@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
 #
-# run_tests.sh — Build and run every tests/test_*.c under bindings/c.
+# run_tests.sh -- Build and run every tests/test_*.c under bindings/c.
 #
-# Mirrors the per-test-binary discipline of the Ada / D / Rust binding
-# test runners: each tests/test_*.c is compiled to its own standalone
-# executable in tests/build/, then run in turn. Per-process isolation
-# gives every test a fresh libitb global state without needing an
-# in-process serial lock.
-#
-# The Makefile's per-binary pattern rule auto-discovers tests/test_*.c
-# via wildcard glob and links each binary against build/libitb_c.a +
-# the system `check` unit-testing framework + libitb.so (the latter via
-# embedded RPATH so LD_LIBRARY_PATH is unnecessary at runtime).
+# Each tests/test_*.c is compiled to its own standalone executable in
+# tests/build/, then run in turn. Per-process isolation gives every
+# test a fresh libitb global state without needing an in-process
+# serial lock. Binaries link libitb.so via embedded RPATH, so
+# LD_LIBRARY_PATH is unnecessary at runtime.
 #
 # Usage:
 #   ./run_tests.sh
@@ -20,12 +15,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$(dirname "$0")"
 
-# Build the test binaries via the Makefile so the compiler flags and
-# pkg-config wiring stay in one place.
-make tests >/dev/null
+./build.sh
 
 fail=0
 pass=0

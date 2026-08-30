@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 #
-# build.sh -- one-step build for the C binding: libitb.so + libitb_c.a.
-# Prerequisites (Go, a C17 compiler, GNU make, libcheck for the test
-# runner) must be installed separately; see README.md "Prerequisites"
-# section.
+# build.sh -- one-step build for the C binding: libitb.so + the C
+# library + every test binary. Prerequisites (Go, a C11 compiler, GNU
+# make) must be installed separately; see README.md "Prerequisites".
 #
 # Usage:
 #   ./build.sh             # default build (full asm stack)
@@ -31,10 +30,7 @@ go build -trimpath "${TAGS[@]}" -buildmode=c-shared \
     -o dist/linux-amd64/libitb.so ./cmd/cshared
 
 cd "$SCRIPT_DIR"
-echo "==> cleaning previous build artefacts (make clean)"
-make clean
-mkdir -p build tests/build bench/build
-echo "==> building C binding (make, CC=${CC:-cc})"
-make
+echo "==> building C binding + tests (make, CC=${CC:-cc})"
+make all
 
 echo "==> ready: ./run_tests.sh"
