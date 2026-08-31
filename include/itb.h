@@ -57,7 +57,7 @@ extern "C" {
 
 /* Binding version. Tracks the C wrapper; call itb_version() for the
  * underlying libitb library version. */
-#define ITB_C_VERSION "0.3.0"
+#define ITB_C_VERSION "0.3.1"
 
 /* ------------------------------------------------------------------ */
 /* Status codes                                                        */
@@ -268,7 +268,7 @@ itb_status itb_register_profile(const char *name, const itb_opts *opts);
  * same thread; never NULL (empty string when no diagnostic). */
 const char *itb_last_error(void);
 
-/* The libitb library version string (e.g. "0.3.0"). Thread-local
+/* The libitb library version string (e.g. "0.3.1"). Thread-local
  * buffer owned by the library; NULL only if libitb misbehaves. */
 const char *itb_version(void);
 
