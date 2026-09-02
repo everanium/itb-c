@@ -46,15 +46,33 @@ static int run(void)
     TEST_ASSERT(back2_len == size, "pump length %zu != %zu", back2_len, size);
     TEST_ASSERT(memcmp(back2, plain, size) == 0, "pump payload mismatch");
 
-    /* A tampered wire is rejected; the out-parameters stay safe. */
-    wire[wire_len / 2] ^= 0x01u;
-    uint8_t *bad = NULL;
-    size_t bad_len = 0;
-    st = itb_pipeline_decrypt_stream_one_shot(receiver, wire, wire_len,
-                                              &bad, &bad_len);
-    TEST_ASSERT(st != ITB_STATUS_OK, "tampered wire must be rejected");
-    TEST_ASSERT(bad == NULL && bad_len == 0,
-                "out-parameters must stay NULL / 0 on failure");
+    /* A bit flip in authenticated wire content is rejected; the
+     * out-parameters stay safe on the rejecting probe. A single flip
+     * can land in the container's CSPRNG residue — where the decrypt
+     * legitimately completes clean — so successive flip positions are
+     * probed until one is rejected. The probe is black-box. */
+    int seen_failure = 0;
+    for (size_t attempt = 0; attempt < 32 && !seen_failure; attempt++) {
+        const size_t flip_pos = (wire_len * 3 / 4 + attempt * 1031) % wire_len;
+        wire[flip_pos] ^= 0x01u;
+        uint8_t *bad = NULL;
+        size_t bad_len = 0;
+        st = itb_pipeline_decrypt_stream_one_shot(receiver, wire, wire_len,
+                                                  &bad, &bad_len);
+        if (st != ITB_STATUS_OK) {
+            TEST_ASSERT(bad == NULL && bad_len == 0,
+                        "out-parameters must stay NULL / 0 on failure");
+            seen_failure = 1;
+        } else {
+            /* Flip landed in unauthenticated residue. */
+            TEST_ASSERT(bad_len == size && memcmp(bad, plain, size) == 0,
+                        "residue-flip decrypt must still round-trip");
+            itb_bytes_free(bad);
+        }
+        wire[flip_pos] ^= 0x01u; /* restore for the next probe */
+    }
+    TEST_ASSERT(seen_failure,
+                "no flip position produced an authentication failure");
 
     free(plain);
     itb_bytes_free(wire);
