@@ -11,11 +11,8 @@ static int run(void)
     TEST_OK(st, "init");
 
     itb_pipeline *receiver = NULL;
-    st = itb_pipeline_open("streaming-aead-triple-mac-v1",
-                           itb_pipeline_blob(sender),
-                           itb_pipeline_blob_len(sender),
-                           NULL, NULL, 0, NULL, 0, &receiver);
-    TEST_OK(st, "open");
+    st = test_load_from(sender, &receiver);
+    TEST_OK(st, "load");
 
     const size_t size = (size_t)1 << 20;
     uint8_t *plain = test_payload(size, 0x9E3779B9u);

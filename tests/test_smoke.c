@@ -1,4 +1,4 @@
-/* Init → blob → Open → EncryptMessage → DecryptMessage round trip. */
+/* Init → Save → Load → EncryptMessage → DecryptMessage round trip. */
 
 #include "test_util.h"
 
@@ -7,15 +7,17 @@ static int run(void)
     itb_pipeline *sender = NULL;
     itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", NULL, &sender);
     TEST_OK(st, "init");
-    TEST_ASSERT(itb_pipeline_blob_len(sender) > 0, "blob must be non-empty");
-    TEST_ASSERT(itb_pipeline_blob(sender) != NULL, "blob pointer");
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    st = itb_pipeline_save(sender, &blob, &blob_len);
+    TEST_OK(st, "save");
+    TEST_ASSERT(blob_len > 0, "blob must be non-empty");
+    TEST_ASSERT(blob != NULL, "blob pointer");
+    itb_bytes_free(blob);
 
     itb_pipeline *receiver = NULL;
-    st = itb_pipeline_open("singlemsg-triple-mac-v1",
-                           itb_pipeline_blob(sender),
-                           itb_pipeline_blob_len(sender),
-                           NULL, NULL, 0, NULL, 0, &receiver);
-    TEST_OK(st, "open");
+    st = test_load_from(sender, &receiver);
+    TEST_OK(st, "load");
 
     static const uint8_t plain[] = "smoke round-trip payload";
     const size_t plain_len = sizeof(plain) - 1;

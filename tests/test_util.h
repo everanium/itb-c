@@ -46,4 +46,20 @@ static inline uint8_t *test_payload(size_t n, uint64_t seed)
     return buf;
 }
 
+/* Saves sender's current blob and loads a receiver from it (the
+ * Save → Load handshake every round-trip test starts with). */
+static inline itb_status test_load_from(const itb_pipeline *sender,
+                                        itb_pipeline **receiver)
+{
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    itb_status st = itb_pipeline_save(sender, &blob, &blob_len);
+    if (st != ITB_STATUS_OK) {
+        return st;
+    }
+    st = itb_pipeline_load(blob, blob_len, NULL, 0, NULL, 0, receiver);
+    itb_bytes_free(blob);
+    return st;
+}
+
 #endif /* ITB_TEST_UTIL_H */

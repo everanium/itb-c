@@ -21,9 +21,7 @@
  * *_free entry. */
 
 struct itb_pipeline {
-    uintptr_t handle; /* ITB_Triple_* handle; 0 after free        */
-    uint8_t *blob;    /* owned session-bundle bytes (may be NULL) */
-    size_t blob_len;
+    uintptr_t handle; /* ITB_Triple_* handle; 0 after free */
 };
 
 struct itb_stream {
@@ -36,7 +34,8 @@ struct itb_opts {
     size_t cap; /* allocation size of buf                            */
 };
 
-/* Floor capacity for blob output buffers (Init / Rekey). */
+/* Floor capacity for blob / JSON output buffers (Init / Rekey / Save /
+ * Inspect / Lookup / Profiles). */
 #define ITB_BLOB_CAP ((size_t)(64 * 1024))
 
 /* Feed / drain slice size used by the pump loops. */

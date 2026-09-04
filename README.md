@@ -13,10 +13,11 @@ library that **links against `libitb.so` at compile time**
 Every hash-name / MAC-name / cipher-name / profile-name is an opaque
 string passed through to Go for validation; the binding carries no
 ITB construction logic. The public surface is one `itb_pipeline`
-handle (init / open / rekey / free, Single Message encrypt / decrypt,
-whole-buffer stream pumps, incremental `itb_stream` sessions with
-write / end / read), an `itb_opts` query-string builder,
-`itb_register_profile`, and the Go runtime knobs.
+handle (init / load / save / rekey / free, Single Message encrypt /
+decrypt, whole-buffer stream pumps, incremental `itb_stream` sessions
+with write / end / read), an `itb_opts` query-string builder for init
+overrides, the profile-record entries (`itb_register` / `itb_lookup`
+/ `itb_profiles` / `itb_inspect`), and the Go runtime knobs.
 
 ## Prerequisites (Arch Linux)
 
@@ -69,10 +70,10 @@ without a separate wrapper.
 itb_pipeline *sender = NULL, *receiver = NULL;
 itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", NULL, &sender);
 /* st != ITB_STATUS_OK → consult itb_last_error() */
-st = itb_pipeline_open("singlemsg-triple-mac-v1",
-                       itb_pipeline_blob(sender),
-                       itb_pipeline_blob_len(sender),
-                       NULL, NULL, 0, NULL, 0, &receiver);
+uint8_t *blob = NULL; size_t blob_len = 0;
+st = itb_pipeline_save(sender, &blob, &blob_len);
+st = itb_pipeline_load(blob, blob_len, NULL, 0, NULL, 0, &receiver);
+itb_bytes_free(blob);
 
 uint8_t *wire = NULL; size_t wire_len = 0;
 st = itb_pipeline_encrypt_message(sender, (const uint8_t *)"data", 4,
@@ -88,33 +89,39 @@ itb_pipeline_free(receiver);
 itb_pipeline_free(sender);
 ```
 
-`itb_opts` overrides the profile default per call (chunk size, outer
-cipher, parallax on/off, wrapper on/off, MAC name, palette); every
-setter goes through `itb_opts_set(opts, key, value)`:
+`itb_opts` overrides the profile default at init (chunk size, outer
+cipher, parallax on/off, wrapper on/off, MAC name, palette, worker
+cap); every setter goes through `itb_opts_set(opts, key, value)`. The
+resolved shape travels inside the blob, so the receiver needs no
+options of its own:
 
 ```c
 itb_opts *opts = itb_opts_new();
 itb_opts_set(opts, "chunkSize", "65536");
 itb_opts_set(opts, "withWrapper", "false");
+itb_opts_set(opts, "maxWorkers", "4");
 itb_pipeline_init("singlemsg-triple-mac-v1", opts, &sender);
-itb_pipeline_open("singlemsg-triple-mac-v1",
-                  itb_pipeline_blob(sender), itb_pipeline_blob_len(sender),
-                  opts, NULL, 0, NULL, 0, &receiver);
 itb_opts_free(opts);
 ```
 
 `itb_pipeline_rekey` rotates the parallax + wrapper masters
 mid-session (the eight ITB seeds and MAC key are fixed for the
-session lifetime by design); the receiver picks up the new masters
-through a fresh `itb_pipeline_blob(sender)` handshake:
+session lifetime by design) and hands back the fresh blob; the
+receiver picks up the new masters by loading it:
 
 ```c
 uint8_t perm[32] = { /* fresh */ }, wrap[32] = { /* fresh */ };
-itb_pipeline_rekey(sender, perm, sizeof perm, wrap, sizeof wrap);
-itb_pipeline_open("singlemsg-triple-mac-v1",
-                  itb_pipeline_blob(sender), itb_pipeline_blob_len(sender),
-                  NULL, NULL, 0, NULL, 0, &receiver);
+uint8_t *rotated = NULL; size_t rotated_len = 0;
+itb_pipeline_rekey(sender, perm, sizeof perm, wrap, sizeof wrap,
+                   &rotated, &rotated_len);
+itb_pipeline_load(rotated, rotated_len, NULL, 0, NULL, 0, &receiver);
+itb_bytes_free(rotated);
 ```
+
+The same rotation is available on the receiver side as a master
+override pair on load: `itb_pipeline_load(blob, blob_len, perm,
+sizeof perm, wrap, sizeof wrap, &receiver)` reopens the blob with
+fresh masters folded in.
 
 `itb_pipeline_encrypt_stream_one_shot` /
 `itb_pipeline_decrypt_stream_one_shot` put a whole in-memory payload
@@ -125,6 +132,64 @@ incremental session; the explicit `itb_pipeline_encrypt_stream_begin`
 / `itb_pipeline_decrypt_stream_begin` sessions expose
 `itb_stream_write` / `itb_stream_end` / `itb_stream_read` for
 caller-driven loops.
+
+## Persisting sessions
+
+The blob returned by `itb_pipeline_save` is a self-describing session
+bundle: it carries the resolved profile record, the inner key
+material, and the parallax / wrapper masters. `itb_pipeline_load`
+reconstructs a Pipeline from it without naming a profile.
+
+```c
+uint8_t *blob = NULL; size_t blob_len = 0;
+itb_pipeline_save(sender, &blob, &blob_len);               /* current blob bytes */
+itb_pipeline_load(blob, blob_len, NULL, 0, NULL, 0, &receiver); /* reopen from bytes */
+itb_pipeline_save_f(sender, "session.blob");               /* write to a file (mode 0600) */
+itb_pipeline_load_f("session.blob", NULL, 0, NULL, 0, &receiver2); /* reopen from a file */
+char *json = NULL;
+itb_inspect(blob, blob_len, &json);                         /* profile record, no Pipeline */
+/* json: {"name":"singlemsg-triple-mac-v1","mode":"singlemsg-mac",...} */
+itb_string_free(json);
+itb_bytes_free(blob);
+```
+
+`itb_inspect` decodes the embedded profile record (a JSON object)
+without constructing a Pipeline. `itb_pipeline_save_f` /
+`itb_pipeline_load_f` perform the file access inside libitb.
+
+Load works for blobs generated with shipped primitives (every entry in
+the shipped catalogue). Blobs generated by Go programs that use
+`hashes.Register` or `macs.Register` to install custom primitives
+cannot be loaded through this binding — the receiver must use the Go
+library directly and register the same custom primitive under the
+same name before opening. Attempting to load such a blob through this
+binding surfaces `ITB_STATUS_RECIPE_PRIMITIVE_UNKNOWN`.
+
+**Runtime tuning.** The worker cap is per-machine and never travels
+in the blob; the receiver may pick its own after load:
+
+```c
+itb_pipeline_max_workers(receiver, 4);   /* clamped by libitb; <= 0 selects auto */
+```
+
+## Profile registry
+
+`itb_register` installs a user-defined profile under a new name from
+a profile JSON record; `itb_lookup` reads a registered record back;
+`itb_profiles` lists every registered name as a JSON array. The
+record's field rules are enforced by libitb; the binding treats the
+JSON as an opaque string.
+
+```c
+itb_register("my-nomac-plain",
+             "{\"mode\":\"singlemsg-nomac\",\"width\":512,\"hash\":\"areion512\","
+             "\"keybits\":1024,\"wrapper\":false,\"parallax\":false}");
+char *json = NULL;
+itb_lookup("my-nomac-plain", &json);   /* record with "name" filled in */
+itb_string_free(json);
+itb_profiles(&json);                   /* ["blob-triple-mac-v1", ...] */
+itb_string_free(json);
+```
 
 Profile names, opts keys, and every primitive name are validated by
 the Go side; a rejected string surfaces as a non-OK `itb_status` with
@@ -204,10 +269,21 @@ A small CLI under `bindings/c/eitb/` mirrors the shipped Go
 ```bash
 cd bindings/c/eitb && make
 ./eitb version
-./eitb hashes
+./eitb profiles
 ./eitb encrypt singlemsg-triple-mac-v1 in.bin out.bin   # blob hex on stderr
 ./eitb decrypt singlemsg-triple-mac-v1 <blob-hex> out.bin back.bin
 ```
+
+`decrypt` reopens the session with `itb_pipeline_load` from the blob
+hex; the profile argument only selects the Single Message or
+streaming cipher pair.
+
+## itb3 CLI
+
+The shipped `itb3` binary under `cmd/itb3/` of the main repository
+generates profile files (`.json` on disk) that this binding reopens
+via `itb_pipeline_load_f`; the same utility also encrypts and
+decrypts files directly. See `cmd/itb3/README.md` for full usage.
 
 ## Limitations
 

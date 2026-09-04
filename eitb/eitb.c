@@ -4,12 +4,14 @@
  * Subcommands:
  *
  *   eitb version                                   library + binding versions
- *   eitb hashes                                    shipped hash primitive roster
+ *   eitb profiles                                  registered profile catalogue
  *   eitb encrypt <profile> <in-file> <out-file>    Single Message encrypt
  *   eitb decrypt <profile> <blob-hex> <in-file> <out-file>
  *
  * `encrypt` prints the session blob to stderr as hex; feed that hex
- * back to `decrypt` on the receiving side.
+ * back to `decrypt` on the receiving side. `profiles` lists the
+ * registered profile catalogue one name per line; the profiles that
+ * carry a cipher surface are the ones `encrypt` / `decrypt` accept.
  */
 
 #include <errno.h>
@@ -25,7 +27,7 @@ static int usage(void)
 {
     fprintf(stderr,
             "usage: eitb version\n"
-            "       eitb hashes\n"
+            "       eitb profiles\n"
             "       eitb encrypt <profile> <in-file> <out-file>\n"
             "       eitb decrypt <profile> <blob-hex> <in-file> <out-file>\n");
     return 2;
@@ -170,17 +172,28 @@ static int cmd_version(void)
     return 0;
 }
 
-static int cmd_hashes(void)
+/* Prints the registered profile catalogue one name per line in the
+ * sorted order itb_profiles returns. The catalogue arrives as a JSON
+ * array of strings; profile names are restricted to [a-z0-9-], so
+ * each quoted run is one complete name and no escape handling is
+ * needed. */
+static int cmd_profiles(void)
 {
-    size_t n = itb_hash_count();
-    for (size_t i = 0; i < n; i++) {
-        const char *name = itb_hash_name(i);
-        if (name == NULL) {
-            fprintf(stderr, "eitb: itb_hash_name(%zu) failed\n", i);
-            return 1;
-        }
-        printf("%2zu  %-12s %d bits\n", i, name, itb_hash_width(i));
+    char *json = NULL;
+    itb_status st = itb_profiles(&json);
+    if (st != ITB_STATUS_OK) {
+        return fail_status("profiles", st);
     }
+    const char *p = json;
+    while ((p = strchr(p, '"')) != NULL) {
+        const char *end = strchr(p + 1, '"');
+        if (end == NULL) {
+            break;
+        }
+        printf("%.*s\n", (int)(end - p - 1), p + 1);
+        p = end + 1;
+    }
+    itb_string_free(json);
     return 0;
 }
 
@@ -225,12 +238,20 @@ static int cmd_encrypt(const char *profile, const char *infile,
     }
     int rc = write_file(outfile, wire, wire_len);
     if (rc == 0) {
-        const uint8_t *blob = itb_pipeline_blob(pipe);
-        size_t blob_len = itb_pipeline_blob_len(pipe);
+        uint8_t *blob = NULL;
+        size_t blob_len = 0;
+        st = itb_pipeline_save(pipe, &blob, &blob_len);
+        if (st != ITB_STATUS_OK) {
+            free(plain);
+            itb_bytes_free(wire);
+            itb_pipeline_free(pipe);
+            return fail_status("save", st);
+        }
         for (size_t i = 0; i < blob_len; i++) {
             fprintf(stderr, "%02x", blob[i]);
         }
         fprintf(stderr, "\n");
+        itb_bytes_free(blob);
         printf("encrypted %s -> %s (%zu -> %zu bytes)\n", infile, outfile,
                plain_len, wire_len);
     }
@@ -285,13 +306,14 @@ static int cmd_decrypt(const char *profile, const char *blob_hex,
         free(blob);
         return 1;
     }
+    /* The profile shape travels inside the blob; the profile argument
+     * only selects the Single Message or streaming cipher pair. */
     itb_pipeline *pipe = NULL;
-    itb_status st = itb_pipeline_open(profile, blob, blob_len,
-                                      NULL, NULL, 0, NULL, 0, &pipe);
+    itb_status st = itb_pipeline_load(blob, blob_len, NULL, 0, NULL, 0, &pipe);
     free(blob);
     if (st != ITB_STATUS_OK) {
         free(wire);
-        return fail_status("open", st);
+        return fail_status("load", st);
     }
     uint8_t *plain = NULL;
     size_t plain_len = 0;
@@ -326,8 +348,8 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "version") == 0 && argc == 2) {
         return cmd_version();
     }
-    if (strcmp(argv[1], "hashes") == 0 && argc == 2) {
-        return cmd_hashes();
+    if (strcmp(argv[1], "profiles") == 0 && argc == 2) {
+        return cmd_profiles();
     }
     if (strcmp(argv[1], "encrypt") == 0 && argc == 5) {
         return cmd_encrypt(argv[2], argv[3], argv[4]);

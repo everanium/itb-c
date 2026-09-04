@@ -1,4 +1,4 @@
-/* Init → Rekey → Open receiver with the rotated blob → round trip. */
+/* Init → Rekey → Load receiver with the rotated blob → round trip. */
 
 #include "test_util.h"
 
@@ -8,29 +8,47 @@ static int run(void)
     itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", NULL, &sender);
     TEST_OK(st, "init");
 
-    size_t before_len = itb_pipeline_blob_len(sender);
-    uint8_t *before = malloc(before_len);
-    TEST_ASSERT(before != NULL, "blob copy alloc");
-    memcpy(before, itb_pipeline_blob(sender), before_len);
+    uint8_t *before = NULL;
+    size_t before_len = 0;
+    st = itb_pipeline_save(sender, &before, &before_len);
+    TEST_OK(st, "save before");
 
     uint8_t perm[32];
     uint8_t wrap[32];
     memset(perm, 0x11, sizeof(perm));
     memset(wrap, 0x22, sizeof(wrap));
-    st = itb_pipeline_rekey(sender, perm, sizeof(perm), wrap, sizeof(wrap));
+    uint8_t *rotated = NULL;
+    size_t rotated_len = 0;
+    st = itb_pipeline_rekey(sender, perm, sizeof(perm), wrap, sizeof(wrap),
+                            &rotated, &rotated_len);
     TEST_OK(st, "rekey");
-    TEST_ASSERT(itb_pipeline_blob_len(sender) != before_len ||
-                    memcmp(itb_pipeline_blob(sender), before,
-                           before_len) != 0,
+    TEST_ASSERT(rotated_len != before_len ||
+                    memcmp(rotated, before, before_len) != 0,
                 "rekey must refresh the blob");
-    free(before);
+    itb_bytes_free(before);
+
+    /* save reports the rotated blob. */
+    uint8_t *after = NULL;
+    size_t after_len = 0;
+    st = itb_pipeline_save(sender, &after, &after_len);
+    TEST_OK(st, "save after");
+    TEST_ASSERT(after_len == rotated_len && memcmp(after, rotated, after_len) == 0,
+                "save must report the rotated blob");
+    itb_bytes_free(after);
 
     itb_pipeline *receiver = NULL;
-    st = itb_pipeline_open("singlemsg-triple-mac-v1",
-                           itb_pipeline_blob(sender),
-                           itb_pipeline_blob_len(sender),
-                           NULL, NULL, 0, NULL, 0, &receiver);
-    TEST_OK(st, "open");
+    st = itb_pipeline_load(rotated, rotated_len, NULL, 0, NULL, 0, &receiver);
+    TEST_OK(st, "load");
+    itb_bytes_free(rotated);
+
+    /* A NULL out pair discards the rekey bytes. */
+    memset(perm, 0x33, sizeof(perm));
+    st = itb_pipeline_rekey(receiver, perm, sizeof(perm), wrap, sizeof(wrap),
+                            NULL, NULL);
+    TEST_OK(st, "rekey discard");
+    st = itb_pipeline_rekey(sender, perm, sizeof(perm), wrap, sizeof(wrap),
+                            NULL, NULL);
+    TEST_OK(st, "rekey sender");
 
     static const uint8_t plain[] = "post-rekey payload";
     uint8_t *wire = NULL;

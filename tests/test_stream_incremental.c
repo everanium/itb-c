@@ -64,11 +64,8 @@ static int run(void)
     TEST_OK(st, "init");
 
     itb_pipeline *receiver = NULL;
-    st = itb_pipeline_open("streaming-aead-triple-mac-v1",
-                           itb_pipeline_blob(sender),
-                           itb_pipeline_blob_len(sender),
-                           opts, NULL, 0, NULL, 0, &receiver);
-    TEST_OK(st, "open");
+    st = test_load_from(sender, &receiver);
+    TEST_OK(st, "load");
     itb_opts_free(opts);
 
     const size_t size = 65536;

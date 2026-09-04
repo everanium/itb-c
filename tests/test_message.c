@@ -12,10 +12,7 @@ static int round_trip(const char *profile, size_t size)
     TEST_OK(st, profile);
 
     itb_pipeline *receiver = NULL;
-    st = itb_pipeline_open(profile,
-                           itb_pipeline_blob(sender),
-                           itb_pipeline_blob_len(sender),
-                           NULL, NULL, 0, NULL, 0, &receiver);
+    st = test_load_from(sender, &receiver);
     TEST_OK(st, profile);
 
     uint8_t *plain = test_payload(size, (uint64_t)size);

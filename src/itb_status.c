@@ -1,9 +1,7 @@
 /*
- * itb_status.c — status labels, last-error fetch, runtime knobs, and
- * the diagnostic registry iteration for CLI tooling.
+ * itb_status.c — status labels, last-error fetch, and runtime knobs.
  */
 
-#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,9 +25,9 @@ const char *itb_status_str(itb_status status)
     case ITB_STATUS_SEED_WIDTH_MIX:       return "seed width mismatch";
     case ITB_STATUS_BAD_MAC:              return "unknown MAC name or invalid MAC handle";
     case ITB_STATUS_MAC_FAILURE:          return "MAC verification failed";
-    case ITB_STATUS_RESERVED_11:
-    case ITB_STATUS_RESERVED_12:
-    case ITB_STATUS_RESERVED_13:
+    case ITB_STATUS_BLOB_MALFORMED_RECIPE:    return "blob recipe malformed";
+    case ITB_STATUS_RECIPE_PRIMITIVE_UNKNOWN: return "blob recipe names an unknown primitive";
+    case ITB_STATUS_UNKNOWN_PROFILE:          return "unknown profile name";
     case ITB_STATUS_RESERVED_14:
     case ITB_STATUS_RESERVED_15:
     case ITB_STATUS_RESERVED_16:
@@ -69,7 +67,6 @@ itb_status itb_internal_status(int rc)
 #define ITB_ERRBUF_CAP ((size_t)2048)
 static _Thread_local char g_last_error[ITB_ERRBUF_CAP];
 static _Thread_local char g_version[64];
-static _Thread_local char g_hash_name[128];
 
 const char *itb_last_error(void)
 {
@@ -110,43 +107,15 @@ int32_t itb_set_gc_percent(int32_t pct)
 }
 
 /* ------------------------------------------------------------------ */
-/* Diagnostic registry iteration (CLI tooling)                         */
-/* ------------------------------------------------------------------ */
-
-size_t itb_hash_count(void)
-{
-    int n = ITB_HashCount();
-    return n > 0 ? (size_t)n : 0;
-}
-
-const char *itb_hash_name(size_t index)
-{
-    if (index > (size_t)INT_MAX) {
-        return NULL;
-    }
-    size_t need = 0;
-    g_hash_name[0] = '\0';
-    int rc = ITB_HashName((int)index, g_hash_name, sizeof(g_hash_name), &need);
-    if (rc != (int)ITB_STATUS_OK) {
-        return NULL;
-    }
-    return g_hash_name;
-}
-
-int itb_hash_width(size_t index)
-{
-    if (index > (size_t)INT_MAX) {
-        return 0;
-    }
-    int w = ITB_HashWidth((int)index);
-    return w > 0 ? w : 0;
-}
-
-/* ------------------------------------------------------------------ */
 /* Bytes helper                                                        */
 /* ------------------------------------------------------------------ */
 
 void itb_bytes_free(uint8_t *bytes)
 {
     free(bytes);
+}
+
+void itb_string_free(char *str)
+{
+    free(str);
 }
