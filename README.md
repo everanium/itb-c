@@ -1,0 +1,311 @@
+## ITB C Binding
+
+> **Security notice.** ITB is an experimental symmetric cipher construction without prior peer review, independent cryptanalysis, or formal certification. The construction's security properties have **not been verified** by independent cryptographers or mathematicians.
+>
+> PRF-grade hash functions are **required**. No warranty is provided.
+
+**No bespoke cryptography.** ITB introduces no cryptographic primitive of its own — no custom S-box, permutation, or round function. It is a construction over existing primitives, much as PGP composes standard ciphers rather than defining one. Such constructions are not the object of algorithm-level cryptographic certification: national regimes (NIST CAVP/FIPS in the US, GOST/FSB in Russia, OSCCA's SM-series in China, IC3S in India, SOG-IS/EUCC and national lists in the EU, ASD's ISM in Australia, CRYPTREC in Japan, KCMVP in South Korea) certify **primitives** and the **modules** built on them, not compositional schemes. Eligibility for regulated use is therefore inherited from the primitives ITB is configured with, not conferred by ITB itself.
+
+Thin proxy over the libitb3 shared library's `ITB_Triple_*` surface
+(`cmd/cshared`). C11 static (`libitb3_c.a`) + shared (`libitb3_c.so`)
+library that **links against `libitb3.so` at compile time**
+(`-litb3_c -litb3` with an embedded RPATH) — no runtime symbol loading.
+Every hash-name / MAC-name / cipher-name / profile-name is an opaque
+string passed through to Go for validation; the binding carries no
+ITB construction logic. The public surface is one `itb_pipeline`
+handle (init / load / save / rekey / free, Single Message encrypt /
+decrypt, whole-buffer stream pumps, incremental `itb_stream` sessions
+with write / end / read), an `itb_opts` query-string builder for init
+overrides, the profile-record entries (`itb_register` / `itb_lookup`
+/ `itb_profiles` / `itb_inspect`), and the Go runtime knobs.
+
+## Prerequisites (Arch Linux)
+
+```bash
+sudo pacman -S go gcc make
+```
+
+Generic Linux: a Go toolchain, a C11 compiler (gcc or clang), and GNU
+make. macOS: the same via Xcode command-line tools; libitb3 builds as
+`libitb3.dylib`. Windows: MinGW-w64 or clang against `libitb3.dll`.
+
+## Build the shared library
+
+The convenience driver builds `libitb3.so`, the C library, and every
+test binary in one step:
+
+```bash
+./bindings/c/build.sh
+```
+
+Equivalent manual invocation:
+
+```bash
+go build -trimpath -buildmode=c-shared \
+    -o dist/linux-amd64/libitb3.so ./cmd/cshared
+cd bindings/c && make all
+```
+
+## Add to a C / C++ project
+
+Compile against the public header and link the static archive plus
+the underlying `libitb3.so`:
+
+```bash
+cc -std=c11 -I/path/to/bindings/c/include myapp.c \
+    /path/to/bindings/c/build/libitb3_c.a \
+    -L/path/to/dist/linux-amd64 -Wl,-rpath,/path/to/dist/linux-amd64 \
+    -litb3
+```
+
+The header is C++-aware (`extern "C"` block guarded by
+`__cplusplus`), so the same archive serves C and C++ consumers
+without a separate wrapper.
+
+## Usage example
+
+```c
+#include <itb3.h>
+
+itb_pipeline *sender = NULL, *receiver = NULL;
+itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", NULL, &sender);
+/* st != ITB_STATUS_OK → consult itb_last_error() */
+uint8_t *blob = NULL; size_t blob_len = 0;
+st = itb_pipeline_save(sender, &blob, &blob_len);
+st = itb_pipeline_load(blob, blob_len, NULL, 0, NULL, 0, &receiver);
+itb_bytes_free(blob);
+
+uint8_t *wire = NULL; size_t wire_len = 0;
+st = itb_pipeline_encrypt_message(sender, (const uint8_t *)"data", 4,
+                                  &wire, &wire_len);
+
+uint8_t *plain = NULL; size_t plain_len = 0;
+st = itb_pipeline_decrypt_message(receiver, wire, wire_len,
+                                  &plain, &plain_len);
+
+itb_bytes_free(wire);
+itb_bytes_free(plain);
+itb_pipeline_free(receiver);
+itb_pipeline_free(sender);
+```
+
+`itb_opts` overrides the profile default at init (chunk size, outer
+cipher, parallax on/off, wrapper on/off, MAC name, palette, worker
+cap); every setter goes through `itb_opts_set(opts, key, value)`. The
+resolved shape travels inside the blob, so the receiver needs no
+options of its own:
+
+```c
+itb_opts *opts = itb_opts_new();
+itb_opts_set(opts, "chunkSize", "65536");
+itb_opts_set(opts, "withWrapper", "false");
+itb_opts_set(opts, "maxWorkers", "4");
+itb_pipeline_init("singlemsg-triple-mac-v1", opts, &sender);
+itb_opts_free(opts);
+```
+
+`itb_pipeline_rekey` rotates the parallax + wrapper masters
+mid-session (the eight ITB seeds and MAC key are fixed for the
+session lifetime by design) and hands back the fresh blob; the
+receiver picks up the new masters by loading it:
+
+```c
+uint8_t perm[32] = { /* fresh */ }, wrap[32] = { /* fresh */ };
+uint8_t *rotated = NULL; size_t rotated_len = 0;
+itb_pipeline_rekey(sender, perm, sizeof perm, wrap, sizeof wrap,
+                   &rotated, &rotated_len);
+itb_pipeline_load(rotated, rotated_len, NULL, 0, NULL, 0, &receiver);
+itb_bytes_free(rotated);
+```
+
+The same rotation is available on the receiver side as a master
+override pair on load: `itb_pipeline_load(blob, blob_len, perm,
+sizeof perm, wrap, sizeof wrap, &receiver)` reopens the blob with
+fresh masters folded in.
+
+`itb_pipeline_encrypt_stream_one_shot` /
+`itb_pipeline_decrypt_stream_one_shot` put a whole in-memory payload
+through the stream chain in a single call. For bounded-memory
+streaming, `itb_pipeline_encrypt_stream_pump` /
+`itb_pipeline_decrypt_stream_pump` move a whole buffer through an
+incremental session; the explicit `itb_pipeline_encrypt_stream_begin`
+/ `itb_pipeline_decrypt_stream_begin` sessions expose
+`itb_stream_write` / `itb_stream_end` / `itb_stream_read` for
+caller-driven loops.
+
+## Persisting sessions
+
+The blob returned by `itb_pipeline_save` is a self-describing session
+bundle: it carries the resolved profile record, the inner key
+material, and the parallax / wrapper masters. `itb_pipeline_load`
+reconstructs a Pipeline from it without naming a profile.
+
+```c
+uint8_t *blob = NULL; size_t blob_len = 0;
+itb_pipeline_save(sender, &blob, &blob_len);               /* current blob bytes */
+itb_pipeline_load(blob, blob_len, NULL, 0, NULL, 0, &receiver); /* reopen from bytes */
+itb_pipeline_save_f(sender, "session.blob");               /* write to a file (mode 0600) */
+itb_pipeline_load_f("session.blob", NULL, 0, NULL, 0, &receiver2); /* reopen from a file */
+char *json = NULL;
+itb_inspect(blob, blob_len, &json);                         /* profile record, no Pipeline */
+/* json: {"name":"singlemsg-triple-mac-v1","mode":"singlemsg-mac",...} */
+itb_string_free(json);
+itb_bytes_free(blob);
+```
+
+`itb_inspect` decodes the embedded profile record (a JSON object)
+without constructing a Pipeline. `itb_pipeline_save_f` /
+`itb_pipeline_load_f` perform the file access inside libitb3.
+
+Load works for blobs generated with shipped primitives (every entry in
+the shipped catalogue). Blobs generated by Go programs that use
+`hashes.Register` or `macs.Register` to install custom primitives
+cannot be loaded through this binding — the receiver must use the Go
+library directly and register the same custom primitive under the
+same name before opening. Attempting to load such a blob through this
+binding surfaces `ITB_STATUS_RECIPE_PRIMITIVE_UNKNOWN`.
+
+**Runtime tuning.** The worker cap is per-machine and never travels
+in the blob; the receiver may pick its own after load:
+
+```c
+itb_pipeline_max_workers(receiver, 4);   /* clamped by libitb3; <= 0 selects auto */
+```
+
+## Profile registry
+
+`itb_register` installs a user-defined profile under a new name from
+a profile JSON record; `itb_lookup` reads a registered record back;
+`itb_profiles` lists every registered name as a JSON array. The
+record's field rules are enforced by libitb3; the binding treats the
+JSON as an opaque string.
+
+```c
+itb_register("my-nomac-plain",
+             "{\"mode\":\"singlemsg-nomac\",\"width\":512,\"hash\":\"areion512\","
+             "\"keybits\":1024,\"wrapper\":false,\"parallax\":false}");
+char *json = NULL;
+itb_lookup("my-nomac-plain", &json);   /* record with "name" filled in */
+itb_string_free(json);
+itb_profiles(&json);                   /* ["blob-triple-mac-v1", ...] */
+itb_string_free(json);
+```
+
+Profile names, opts keys, and every primitive name are validated by
+the Go side; a rejected string surfaces as a non-OK `itb_status` with
+the diagnostic available via `itb_last_error()`.
+
+## Memory
+
+Two process-wide knobs constrain Go runtime arena pacing, readable at
+libitb3 load time via env vars (`ITB_GOMEMLIMIT`, `ITB_GOGC`) and
+adjustable at any time programmatically. Pass `-1` to query without
+changing. Long-running or allocation-heavy workloads (benchmarks,
+bulk encryption) should set both — without a soft cap + aggressive GC
+the Go scratch heap grows unboundedly under allocation churn:
+
+```c
+itb_set_memory_limit(4LL << 30); /* 4 GiB soft cap */
+itb_set_gc_percent(100);          /* balanced GC */
+```
+
+## Testing
+
+```bash
+./bindings/c/run_tests.sh
+```
+
+The harness builds `libitb3.so` + the C library, compiles every
+`tests/test_*.c` to its own standalone executable under
+`tests/build/`, and runs each in turn; per-process isolation gives
+every test a fresh libitb3 global state. The suite covers Single
+Message round trips per shipped profile, stream pumps, incremental
+sessions with pathological batch sizes, tampered-wire failure
+stickiness, mid-flight cancellation, rekey, profile registration,
+opts-builder encoding, and error mapping — surface parity checks; the
+deep suite lives in Go under the shipped tree. Override the compiler
+via `CC=clang ./bindings/c/run_tests.sh`.
+
+## Sanitizer runs
+
+```bash
+cd bindings/c
+make test-asan       # test suite under AddressSanitizer
+make test-ubsan      # test suite under UndefinedBehaviorSanitizer
+make test-valgrind   # test suite under valgrind --leak-check=full
+```
+
+The sanitizer targets rebuild the library + tests into separate
+build directories (`build/asan`, `build/ubsan`) so instrumented and
+plain objects never mix. `test-valgrind` requires valgrind to be able
+to read the host `ld.so` symbols (on some distributions this needs
+the glibc debug-symbol package); where host symbols are unavailable,
+the same binaries run under valgrind inside a stock `ubuntu:24.04`
+container with `valgrind` + `libc6-dbg` installed and the repository
+bind-mounted at its host path (the embedded RPATH resolves
+`libitb3.so` unchanged). `tests/valgrind.supp` silences memcheck noise
+whose faulting frame lies inside `libitb3.so` — the Go runtime manages
+its own stacks and heap in ways memcheck cannot model; errors in the
+binding's own C frames are never suppressed.
+
+## Benchmarking
+
+```bash
+./bindings/c/run_bench.sh
+```
+
+Micro-benches: `message` (EncryptMessage) and `stream_pump`
+(encrypt stream pump) throughput at 1 KiB / 64 KiB / 1 MiB / 16 MiB,
+reported as an MB/s table on stdout. The runner exports
+`ITB_GOMEMLIMIT=4GiB` + `ITB_GOGC=100` defaults (respecting caller
+overrides) and the bench binaries apply the same caps
+programmatically.
+
+## itb3 CLI
+
+The Go core ships an openssl-style CLI utility
+[`itb3`](https://github.com/everanium/itb/tree/main/cmd/itb3/) that generates session blobs on disk
+(`itb3 genblob <mode> <hash> -o blob.json`); this binding reopens
+such blobs via `itb_pipeline_load_f`. `itb3` also encrypts /
+decrypts payloads directly on disk (`-i` / `-o`) or through stdin /
+stdout, rotates outer masters, and inspects stored blobs. See
+[`cmd/itb3/README.md`](https://github.com/everanium/itb/blob/main/cmd/itb3/README.md) for the full
+subcommand reference.
+
+## eitb utility
+
+A small CLI under `bindings/c/eitb/` mirrors the shipped Go
+`tools/eitb` scope for shell smoke tests:
+
+```bash
+cd bindings/c/eitb && make
+./eitb version
+./eitb profiles
+./eitb encrypt singlemsg-triple-mac-v1 in.bin out.bin   # blob hex on stderr
+./eitb decrypt singlemsg-triple-mac-v1 <blob-hex> out.bin back.bin
+```
+
+`decrypt` reopens the session with `itb_pipeline_load` from the blob
+hex; the profile argument only selects the Single Message or
+streaming cipher pair.
+
+## Limitations
+
+- The binding wraps the Triple Pipeline surface only. The Low-Level
+  seed / MAC / blob / wrapper / parallax APIs are not exposed — use
+  the shipped Go core for those.
+- Streaming-decrypt caveat: chunked Streaming AEAD verifies per
+  chunk, so plaintext of verified chunks is released before a later
+  chunk can fail authentication.
+- The `itb_last_error()` text is process-global last-write-wins on
+  the Go side; fetch it immediately after the failing call. The
+  status code is always attributable.
+- `itb_pipeline_rekey` must not run concurrently with cipher calls or
+  open stream sessions on the same Pipeline.
+- Handles are freed exactly once (`itb_pipeline_free` /
+  `itb_stream_free`, both NULL-safe); a stream session must not
+  outlive its Pipeline.
+
+## License
+
+Apache-2.0 — see [LICENSE](https://github.com/everanium/itb/blob/main/LICENSE).
