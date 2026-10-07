@@ -1,7 +1,7 @@
 /*
- * test_util.h — minimal assertion + payload helpers shared by the
- * binding's integration tests. No framework dependency: every test is
- * a standalone binary whose main() returns non-zero on failure.
+ * Minimal assertion + payload helpers shared by the binding's
+ * integration tests. No framework dependency: every test is a
+ * standalone binary whose main() returns non-zero on failure.
  */
 
 #ifndef ITB_TEST_UTIL_H
@@ -26,8 +26,8 @@
     } while (0)
 
 #define TEST_OK(st, what)                                             \
-    TEST_ASSERT((st) == ITB_STATUS_OK, "%s: status %d (%s): %s",      \
-                (what), (int)(st), itb_status_str(st), itb_last_error())
+    TEST_ASSERT((st) == ITB_STATUS_OK, "%s: status %d: %s",           \
+                (what), (int)(st), itb_last_error())
 
 /* Deterministic non-trivial payload (xorshift fill). Caller frees. */
 static inline uint8_t *test_payload(size_t n, uint64_t seed)

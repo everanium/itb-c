@@ -1,5 +1,5 @@
 /*
- * itb_opts.c — URL-query builder for the opts pass-through string.
+ * URL-query builder for the opts pass-through string.
  *
  * The builder performs no validation — every key and value is
  * percent-encoded into a query string and passed through to Go

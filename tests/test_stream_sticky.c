@@ -60,8 +60,8 @@ static int probe_once(const itb_pipeline *receiver,
     if (clean) {
         rc = 0; /* flip landed in residue — try the next position */
     } else if (first != ITB_STATUS_MAC_FAILURE) {
-        fprintf(stderr, "FAIL: expected MAC failure at pos %zu, got %d (%s)\n",
-                flip_pos, (int)first, itb_status_str(first));
+        fprintf(stderr, "FAIL: expected MAC failure at pos %zu, got status %d: %s\n",
+                flip_pos, (int)first, itb_last_error());
         rc = -1;
     } else {
         /* Sticky: a subsequent read reports the same status. */

@@ -1,10 +1,10 @@
 /*
- * bench_util.h — shared timing + reporting helpers for the C binding
+ * Shared timing + reporting helpers for the C binding
  * micro-benchmarks. Wall-clock via clock_gettime(CLOCK_MONOTONIC);
  * output is a fixed-width table:
  *
  *   bench             size     mb_per_sec
- *   message           1 KiB    <n>
+ *   message           1 MiB    <n>
  *   ...
  */
 

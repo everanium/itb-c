@@ -53,9 +53,9 @@ static int run_stream_one_shot_decrypt(void *raw)
 
 int main(void)
 {
-    /* Bench-scale allocation churn leaks Go scratch heap unboundedly
-     * without a soft memory cap + aggressive GC; the return values
-     * report the previous settings, not an error. */
+    /* Bench-scale allocation churn grows the Go scratch heap
+     * unboundedly without a soft memory cap + aggressive GC; the
+     * return values report the previous settings, not an error. */
     (void)itb_set_memory_limit(4LL << 30); /* 4 GiB soft cap */
     (void)itb_set_gc_percent(100);          /* balanced GC */
 

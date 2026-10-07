@@ -169,7 +169,113 @@ static int run(void)
     return 0;
 }
 
+/* Builds a register payload from an inspected profile: the record
+ * minus the name and the inspection-only nonce_bits / barrier_fill /
+ * container_mode keys, which sit contiguously between keybits and
+ * drbg. NULL when the keys are not in that order; caller frees. */
+static char *register_payload(const char *inspected)
+{
+    const char *mode = strstr(inspected, "\"mode\"");
+    const char *cut = strstr(inspected, "\"nonce_bits\"");
+    const char *drbg = strstr(inspected, "\"drbg\"");
+    if (mode == NULL || cut == NULL || drbg == NULL || mode > cut || cut > drbg) {
+        return NULL;
+    }
+    size_t head = (size_t)(cut - mode);
+    size_t tail = strlen(drbg);
+    char *out = malloc(1 + head + tail + 1);
+    if (out == NULL) {
+        return NULL;
+    }
+    out[0] = '{';
+    memcpy(out + 1, mode, head);
+    memcpy(out + 1 + head, drbg, tail + 1);
+    return out;
+}
+
+/* The drbg recipe key: an Init under each named fill primitive
+ * round-trips through a loaded blob and is reported by inspect; the
+ * default leaves the key out of inspect and lookup; an inspected
+ * record re-registers under a new name and keeps the key. */
+static int run_drbg(void)
+{
+    static const char *const names[] = {"csprng", "aesitb128"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        itb_opts *opts = itb_opts_new();
+        TEST_ASSERT(opts != NULL, "opts alloc");
+        TEST_OK(itb_opts_set(opts, "drbg", names[i]), "set drbg");
+        itb_pipeline *sender = NULL;
+        itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", opts, &sender);
+        TEST_OK(st, "init drbg");
+        itb_opts_free(opts);
+        itb_pipeline *receiver = NULL;
+        st = test_load_from(sender, &receiver);
+        TEST_OK(st, "load drbg");
+        if (round_trip(sender, receiver, names[i]) != 0) {
+            return 1;
+        }
+        if (round_trip(receiver, sender, names[i]) != 0) {
+            return 1;
+        }
+        uint8_t *blob = NULL;
+        size_t blob_len = 0;
+        st = itb_pipeline_save(sender, &blob, &blob_len);
+        TEST_OK(st, "save drbg");
+        char *inspected = NULL;
+        st = itb_inspect(blob, blob_len, &inspected);
+        TEST_OK(st, "inspect drbg");
+        char want[64];
+        (void)snprintf(want, sizeof(want), "\"drbg\":\"%s\"", names[i]);
+        TEST_ASSERT(strstr(inspected, want) != NULL,
+                    "inspect must carry %s: %s", want, inspected);
+
+        if (i == 0) {
+            char *payload = register_payload(inspected);
+            TEST_ASSERT(payload != NULL, "register payload: %s", inspected);
+            st = itb_register("c-binding-test-drbg-copy", payload);
+            TEST_OK(st, "register drbg copy");
+            free(payload);
+            char *looked = NULL;
+            st = itb_lookup("c-binding-test-drbg-copy", &looked);
+            TEST_OK(st, "lookup drbg copy");
+            TEST_ASSERT(strstr(looked, "\"drbg\":\"csprng\"") != NULL,
+                        "lookup must keep the drbg key: %s", looked);
+            itb_string_free(looked);
+        }
+        itb_string_free(inspected);
+        itb_bytes_free(blob);
+        itb_pipeline_free(receiver);
+        itb_pipeline_free(sender);
+    }
+
+    itb_pipeline *plain = NULL;
+    itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", NULL, &plain);
+    TEST_OK(st, "init default");
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    st = itb_pipeline_save(plain, &blob, &blob_len);
+    TEST_OK(st, "save default");
+    char *inspected = NULL;
+    st = itb_inspect(blob, blob_len, &inspected);
+    TEST_OK(st, "inspect default");
+    TEST_ASSERT(strstr(inspected, "\"drbg\"") == NULL,
+                "default inspect must omit drbg: %s", inspected);
+    char *looked = NULL;
+    st = itb_lookup("singlemsg-triple-mac-v1", &looked);
+    TEST_OK(st, "lookup shipped");
+    TEST_ASSERT(strstr(looked, "\"drbg\"") == NULL,
+                "shipped lookup must omit drbg: %s", looked);
+    itb_string_free(looked);
+    itb_string_free(inspected);
+    itb_bytes_free(blob);
+    itb_pipeline_free(plain);
+    return 0;
+}
+
 int main(void)
 {
-    return run();
+    if (run() != 0) {
+        return 1;
+    }
+    return run_drbg();
 }

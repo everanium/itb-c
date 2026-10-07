@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #
-# run_bench.sh -- micro-benchmark runner for the C binding. Builds
-# libitb3.so + the C library via build.sh, then compiles and runs the
-# benches/bench_*.c binaries (make bench): EncryptMessage,
-# encrypt_stream_pump, and encrypt_stream_one_shot throughput at
-# 1 MiB / 16 MiB / 64 MiB.
+# Micro-benchmark runner for the C binding. Builds libitb3.so + the C
+# library via build.sh, then compiles and runs the benches/bench_*.c
+# binaries (make bench): EncryptMessage, encrypt_stream_pump, and
+# encrypt_stream_one_shot throughput at 1 MiB / 16 MiB / 64 MiB.
 #
 # Usage:
 #   ./run_bench.sh
@@ -50,7 +49,7 @@ fi
 
 # Build every bench binary via make (no run), then invoke each with
 # its shape-appropriate ITB_PROFILE so the two shapes can carry
-# independent MAC / no-MAC profiles in a single script pass.
+# independent MAC / No MAC profiles in a single script pass.
 make benches/build/bench_message benches/build/bench_stream \
      benches/build/bench_stream_one_shot
 export ITB_PROFILE="${ITB_MSG_PROFILE_DEFAULT}"

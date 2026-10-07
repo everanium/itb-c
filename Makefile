@@ -1,4 +1,4 @@
-# Makefile — build for the ITB C binding (thin Triple Pipeline proxy).
+# Build for the ITB C binding (thin Triple Pipeline proxy).
 #
 # Targets:
 #   all (default):  build/libitb3_c.a + build/libitb3_c.so + every test binary.
@@ -8,6 +8,7 @@
 #   test-ubsan:     the test suite under UndefinedBehaviorSanitizer.
 #   test-valgrind:  the test suite under valgrind --leak-check=full.
 #   eitb:           builds the eitb CLI at eitb/eitb.
+#   loop:           builds the loop stress harness at loop/loop.
 #   bench:          builds + runs the benches/bench_*.c micro-benchmarks.
 #   clean:          removes every generated artefact.
 #
@@ -104,6 +105,15 @@ eitb: eitb/eitb
 eitb/eitb: eitb/eitb.c $(BUILD)/libitb3_c.a
 	$(CC) $(CFLAGS) eitb/eitb.c $(BUILD)/libitb3_c.a -o $@ $(LDFLAGS) $(LIBITB3)
 
+# ---- Loop stress harness --------------------------------------------
+# One binary from every loop/*.c; POSIX threads carry the workers.
+LOOP_SRCS := $(wildcard loop/*.c)
+
+loop: loop/loop
+
+loop/loop: $(LOOP_SRCS) loop/loop.h $(BUILD)/libitb3_c.a
+	$(CC) $(CFLAGS) -pthread $(LOOP_SRCS) $(BUILD)/libitb3_c.a -o $@ $(LDFLAGS) -pthread $(LIBITB3)
+
 # ---- Benches ---------------------------------------------------------
 BENCH_SRCS := $(wildcard benches/bench_*.c)
 BENCH_BINS := $(patsubst benches/bench_%.c,$(BENCHBUILD)/bench_%,$(BENCH_SRCS))
@@ -117,7 +127,7 @@ bench: $(BENCH_BINS)
 
 # ---- Cleanup ---------------------------------------------------------
 clean:
-	rm -rf $(BUILD) tests/build benches/build eitb/eitb
+	rm -rf $(BUILD) tests/build benches/build eitb/eitb loop/loop
 
 .PHONY: all libitb3.so tests test test-asan test-ubsan test-valgrind \
-        eitb bench clean
+        eitb loop bench clean

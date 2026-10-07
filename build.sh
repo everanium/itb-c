@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# build.sh -- one-step build for the C binding: libitb3.so + the C
-# library + every test binary. Prerequisites (Go, a C11 compiler, GNU
-# make) must be installed separately; see README.md "Prerequisites".
+# One-step build for the C binding: libitb3.so + the C library +
+# every test binary. Prerequisites (Go, a C11 compiler, GNU make)
+# must be installed separately; see README.md "Prerequisites".
 #
 # Every artefact this binding owns is removed first, so nothing the
 # build produces can be a leftover from an earlier invocation.
@@ -38,6 +38,7 @@ CLEAN_TARGETS=(
     tests/build           # per-test binaries, asan + ubsan trees
     benches/build         # bench binaries
     eitb/eitb             # eitb CLI
+    loop/loop             # loop stress harness
     scan-build-out        # static-analyser report tree
     coverage              # gcov report tree
 )
@@ -81,7 +82,7 @@ go build -trimpath "${TAGS[@]}" -buildmode=c-shared \
     -o dist/linux-amd64/libitb3.so ./cmd/cshared
 
 cd "$SCRIPT_DIR"
-echo "==> building C binding + tests + eitb (make, CC=${CC:-cc})"
-make all eitb
+echo "==> building C binding + tests + eitb + loop (make, CC=${CC:-cc})"
+make all eitb loop
 
 echo "==> ready: ./run_tests.sh"

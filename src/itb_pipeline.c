@@ -1,7 +1,7 @@
 /*
- * itb_pipeline.c — Triple Pipeline handle lifecycle, persistence
- * (save / load), the Single Message cipher entries, and the profile
- * record entries (inspect / register / lookup / profiles).
+ * Triple Pipeline handle lifecycle, persistence (save / load), the
+ * Single Message cipher entries, and the profile record entries
+ * (inspect / register / lookup / profiles).
  *
  * Binding-side logic is limited to the four FFI-boundary inversions:
  * caller-allocated buffers with the codified retry-once on
@@ -469,4 +469,19 @@ itb_status itb_profiles(char **json_out)
     }
     *json_out = NULL;
     return json_call(profiles_fn, NULL, json_out);
+}
+
+static int hash_names_fn(void *ctx, void *out, size_t cap, size_t *out_len)
+{
+    (void)ctx;
+    return ITB_Triple_HashNames(out, cap, out_len);
+}
+
+itb_status itb_hash_names(char **json_out)
+{
+    if (json_out == NULL) {
+        return ITB_STATUS_BAD_INPUT;
+    }
+    *json_out = NULL;
+    return json_call(hash_names_fn, NULL, json_out);
 }

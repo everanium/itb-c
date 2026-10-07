@@ -129,7 +129,28 @@ static int run(void)
     return 0;
 }
 
+/* An unknown drbg name is relayed to Go and rejected there as
+ * RECIPE_PRIMITIVE_UNKNOWN, with the token in the diagnostic. */
+static int run_drbg_unknown(void)
+{
+    itb_opts *opts = itb_opts_new();
+    TEST_ASSERT(opts != NULL, "opts alloc");
+    TEST_OK(itb_opts_set(opts, "drbg", "nope"), "opts set");
+    itb_pipeline *pipe = NULL;
+    itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", opts, &pipe);
+    TEST_ASSERT(st == ITB_STATUS_RECIPE_PRIMITIVE_UNKNOWN,
+                "unknown drbg: got %d", (int)st);
+    TEST_ASSERT(pipe == NULL, "out handle must stay NULL on failure");
+    TEST_ASSERT(strstr(itb_last_error(), "nope") != NULL,
+                "diagnostic must name the token: %s", itb_last_error());
+    itb_opts_free(opts);
+    return 0;
+}
+
 int main(void)
 {
-    return run();
+    if (run() != 0) {
+        return 1;
+    }
+    return run_drbg_unknown();
 }

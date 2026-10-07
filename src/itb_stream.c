@@ -1,6 +1,6 @@
 /*
- * itb_stream.c — incremental stream sessions over an open Pipeline
- * plus the whole-buffer pump conveniences.
+ * Incremental stream sessions over an open Pipeline plus the
+ * whole-buffer pump conveniences.
  *
  * A session is a dumb byte pump: plaintext (or wire) goes in through
  * write, produced bytes come out through read. All chunking, MAC,

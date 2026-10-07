@@ -1,5 +1,5 @@
 /*
- * itb3.h — public C header for the ITB C binding.
+ * Public C header for the ITB C binding.
  *
  * Thin proxy over the libitb3 shared library's `ITB_Triple_*` surface
  * (cmd/cshared). The binding links against libitb3.so at compile time
@@ -98,10 +98,6 @@ typedef enum itb_status {
     ITB_STATUS_PROFILE_EXISTS       = 26,
     ITB_STATUS_INTERNAL             = 99
 } itb_status;
-
-/* Short static label for a status code. Never NULL; the pointer is a
- * string literal — do not free. */
-const char *itb_status_str(itb_status status);
 
 /* ------------------------------------------------------------------ */
 /* Opaque handle types                                                 */
@@ -308,6 +304,11 @@ itb_status itb_lookup(const char *name, char **json_out);
  * NULL on failure. */
 itb_status itb_profiles(char **json_out);
 
+/* The shipped hash-primitive registry in canonical order as a JSON
+ * array of strings. *json_out is allocated (release with
+ * itb_string_free); NULL on failure. */
+itb_status itb_hash_names(char **json_out);
+
 /* ------------------------------------------------------------------ */
 /* Runtime + diagnostics                                               */
 /* ------------------------------------------------------------------ */
@@ -322,6 +323,13 @@ const char *itb_last_error(void);
  * buffer owned by the library; NULL only if libitb3 misbehaves. */
 const char *itb_version(void);
 
+/* The fill cipher the auto DRBG tier selected on this host
+ * ("aes-256-ctr" or "chacha20"): the tier a Pipeline uses when its
+ * drbg option is empty, resolved per host and recorded in no blob.
+ * Thread-local buffer owned by the library; NULL only if libitb3
+ * misbehaves. */
+const char *itb_drbg_auto_tier(void);
+
 /* Sets the Go runtime's soft heap limit in bytes; returns the
  * previous limit. A negative value queries without changing. */
 int64_t itb_set_memory_limit(int64_t bytes);
@@ -329,6 +337,33 @@ int64_t itb_set_memory_limit(int64_t bytes);
 /* Sets the Go GC trigger percentage; returns the previous value. A
  * negative value queries without changing. */
 int32_t itb_set_gc_percent(int32_t pct);
+
+/* Sets the Go runtime's GOMAXPROCS; returns the previous value. Zero
+ * or a negative value queries without changing. */
+int32_t itb_set_gomaxprocs(int32_t n);
+
+/* Writes the Go runtime's heap profile (pprof format) to path after
+ * one forced garbage collection. A NULL or empty path falls back to
+ * the ITB_MEMPROFILE environment variable; a path that is still
+ * empty, or a file-system failure, is ITB_STATUS_BAD_INPUT with the
+ * diagnostic in itb_last_error(). */
+itb_status itb_write_heap_profile(const char *path);
+
+/* Number of int64_t slots itb_pool_stats fills. Size the buffer from
+ * this call, never from a constant. */
+size_t itb_pool_stats_len(void);
+
+/* Copies the library's pool hit / miss counters into out[0 .. cap).
+ * *len_out receives the slot count written, or on
+ * ITB_STATUS_BUFFER_TOO_SMALL the required count (out == NULL with
+ * cap == 0 probes the requirement without writing). Every counter is
+ * a monotonically increasing total since library load; difference two
+ * snapshots. Slot layout, with T the tier count in slot 0: tier i
+ * holds starter width, checkouts, constructor misses, regrow
+ * replacements and bytes allocated at slots 1 + 5*i .. 1 + 5*i + 4;
+ * the scratch byte pool's get / new / regrow / regrow-bytes follow at
+ * 1 + 5*T, and the parallax chunk pool's at 1 + 5*T + 4. */
+itb_status itb_pool_stats(int64_t *out, size_t cap, size_t *len_out);
 
 /* ------------------------------------------------------------------ */
 /* Bytes helper                                                        */
@@ -339,7 +374,7 @@ int32_t itb_set_gc_percent(int32_t pct);
 void itb_bytes_free(uint8_t *bytes);
 
 /* Releases a JSON string allocated by itb_inspect / itb_lookup /
- * itb_profiles. NULL-safe. */
+ * itb_profiles / itb_hash_names. NULL-safe. */
 void itb_string_free(char *str);
 
 #ifdef __cplusplus
