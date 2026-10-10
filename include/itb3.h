@@ -60,7 +60,7 @@ extern "C" {
 
 /* Binding version. Tracks the C wrapper; call itb_version() for the
  * underlying libitb3 library version. */
-#define ITB_C_VERSION "0.5.1"
+#define ITB_C_VERSION "0.5.5"
 
 /* ------------------------------------------------------------------ */
 /* Status codes                                                        */
@@ -319,7 +319,7 @@ itb_status itb_hash_names(char **json_out);
  * same thread; never NULL (empty string when no diagnostic). */
 const char *itb_last_error(void);
 
-/* The libitb3 library version string (e.g. "0.5.1"). Thread-local
+/* The libitb3 library version string (e.g. "0.5.5"). Thread-local
  * buffer owned by the library; NULL only if libitb3 misbehaves. */
 const char *itb_version(void);
 
