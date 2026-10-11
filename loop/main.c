@@ -722,47 +722,6 @@ static void log_pipeline_initialised(const char *profile, const uint8_t *blob, s
     itb_string_free(json);
 }
 
-/* Offset of the first occurrence of needle in hay, or hay_len when
- * absent. The blob is JSON text handed over without a terminator, so
- * the search is bounded by length rather than by a NUL. */
-static size_t find_bytes(const uint8_t *hay, size_t hay_len, const char *needle, size_t needle_len)
-{
-    for (size_t i = 0; i + needle_len <= hay_len; i++) {
-        if (memcmp(hay + i, needle, needle_len) == 0) {
-            return i;
-        }
-    }
-    return hay_len;
-}
-
-/* Sets the inner blob's "mode" field of a wrap-layer session blob to
- * target_mode (1 = per-region, 2 = per-container) in place. The wrap
- * layer's profile record carries its own "mode" (a string), so the
- * search starts at the inner blob ("ib"); both shipped modes are one
- * digit wide, so the blob length does not change and the key material
- * in blob is never copied. Returns -1 when the inner blob or its mode
- * field is not found. */
-static int edit_inner_blob_mode(uint8_t *blob, size_t blob_len, int target_mode)
-{
-    static const char ib_key[] = "\"ib\":{";
-    static const char mode_key[] = "\"mode\":";
-    size_t ib = find_bytes(blob, blob_len, ib_key, sizeof(ib_key) - 1);
-    if (ib == blob_len) {
-        return -1;
-    }
-    size_t off = ib + sizeof(ib_key) - 1;
-    size_t mode = find_bytes(blob + off, blob_len - off, mode_key, sizeof(mode_key) - 1);
-    if (mode == blob_len - off) {
-        return -1;
-    }
-    size_t at = off + mode + sizeof(mode_key) - 1;
-    if (at + 1 >= blob_len || blob[at] < '1' || blob[at] > '2' || (blob[at + 1] >= '0' && blob[at + 1] <= '9')) {
-        return -1;
-    }
-    blob[at] = (uint8_t)('0' + target_mode);
-    return 0;
-}
-
 /* Constructs one Pipeline against profile with every flag-carried
  * override in the opts string (zero values included — the shared
  * library treats zero as "profile default"), then obtains the Init
@@ -778,6 +737,8 @@ static int build_pipeline(const struct config *cfg, const char *profile,
         return -1;
     }
     char num[32];
+    (void)snprintf(num, sizeof(num), "%d", cfg->blob_mode);
+    (void)itb_opts_set(opts, "mode", num);
     (void)itb_opts_set(opts, "innerHash", cfg->hash);
     (void)itb_opts_set(opts, "macName", cfg->mac);
     (void)itb_opts_set(opts, "withParallax", cfg->parallax ? "true" : "false");
@@ -815,28 +776,6 @@ static int build_pipeline(const struct config *cfg, const char *profile,
         itb_pipeline_free(*pipe);
         *pipe = NULL;
         return -1;
-    }
-    if (cfg->blob_mode == 2) {
-        /* The sizing mode is not an Opts knob: the Init blob is edited
-         * and the pipeline reopened from it, so the retained blob (the
-         * one blob-cycle reopens from) carries the edited mode. */
-        if (edit_inner_blob_mode(*blob, *blob_len, 2) != 0) {
-            fprintf(stderr, "loop: rewrite blob mode: inner blob mode field not found\n");
-            itb_pipeline_free(*pipe);
-            *pipe = NULL;
-            itb_bytes_free(*blob);
-            *blob = NULL;
-            return -1;
-        }
-        itb_pipeline_free(*pipe);
-        *pipe = NULL;
-        st = itb_pipeline_load(*blob, *blob_len, NULL, 0, NULL, 0, pipe);
-        if (st != ITB_STATUS_OK) {
-            fprintf(stderr, "loop: reload Mode 2 blob: status %d: %s\n", (int)st, itb_last_error());
-            itb_bytes_free(*blob);
-            *blob = NULL;
-            return -1;
-        }
     }
     log_pipeline_initialised(profile, *blob, *blob_len);
     return 0;

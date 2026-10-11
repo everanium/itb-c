@@ -97,6 +97,8 @@ options of its own:
 
 ```c
 itb_opts *opts = itb_opts_new();
+/* Mode 1 per-region (default), Mode 2 per-container (compact VPN tunnel mode) */
+itb_opts_set(opts, "mode", "2");
 itb_opts_set(opts, "chunkSize", "65536");
 itb_opts_set(opts, "withWrapper", "false");
 itb_opts_set(opts, "maxWorkers", "4");

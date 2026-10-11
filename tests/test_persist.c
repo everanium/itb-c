@@ -272,10 +272,38 @@ static int run_drbg(void)
     return 0;
 }
 
+static int run_mode(void)
+{
+    itb_opts *opts = itb_opts_new();
+    TEST_ASSERT(opts != NULL, "opts alloc");
+    TEST_OK(itb_opts_set(opts, "mode", "2"), "set mode 2");
+    itb_pipeline *pipe = NULL;
+    itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", opts, &pipe);
+    TEST_OK(st, "init mode 2");
+    itb_opts_free(opts);
+
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    st = itb_pipeline_save(pipe, &blob, &blob_len);
+    TEST_OK(st, "save mode 2");
+    char *inspected = NULL;
+    st = itb_inspect(blob, blob_len, &inspected);
+    TEST_OK(st, "inspect mode 2");
+    TEST_ASSERT(strstr(inspected, "\"container_mode\":2") != NULL,
+                "inspect mode 2 must report container_mode 2: %s", inspected);
+    itb_string_free(inspected);
+    itb_bytes_free(blob);
+    itb_pipeline_free(pipe);
+    return 0;
+}
+
 int main(void)
 {
     if (run() != 0) {
         return 1;
     }
-    return run_drbg();
+    if (run_drbg() != 0) {
+        return 1;
+    }
+    return run_mode();
 }
