@@ -60,7 +60,7 @@ extern "C" {
 
 /* Binding version. Tracks the C wrapper; call itb_version() for the
  * underlying libitb3 library version. */
-#define ITB_C_VERSION "0.7.2"
+#define ITB_C_VERSION "0.7.3"
 
 /* ------------------------------------------------------------------ */
 /* Status codes                                                        */
@@ -140,6 +140,16 @@ const char *itb_opts_query(const itb_opts *opts);
  * released with itb_pipeline_free(); on failure *out is NULL. */
 itb_status itb_pipeline_init(const char *profile, const itb_opts *opts,
                              itb_pipeline **out);
+
+/* Deterministically constructs a Pipeline from eight caller-supplied
+ * master keys (one per canonical seed slot 0..7) against the named
+ * profile and options. The eight master keys must come from
+ * independent entropy or key-agreement sources; never derive all eight
+ * keys from a single secret or a single KDF parent key. */
+itb_status itb_pipeline_init_keys(const char *profile, const itb_opts *opts,
+                                  const void *masters_flat, size_t masters_flat_len,
+                                  const size_t *master_lens, size_t masters_count,
+                                  itb_pipeline **out);
 
 /* Reconstructs a Pipeline from a blob produced by itb_pipeline_save /
  * itb_pipeline_rekey. Pass perm_master / wrap_master as NULL / 0 to
@@ -319,7 +329,7 @@ itb_status itb_hash_names(char **json_out);
  * same thread; never NULL (empty string when no diagnostic). */
 const char *itb_last_error(void);
 
-/* The libitb3 library version string (e.g. "0.7.2"). Thread-local
+/* The libitb3 library version string (e.g. "0.7.3"). Thread-local
  * buffer owned by the library; NULL only if libitb3 misbehaves. */
 const char *itb_version(void);
 

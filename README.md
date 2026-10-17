@@ -13,7 +13,7 @@ library that **links against `libitb3.so` at compile time**
 Every hash-name / MAC-name / cipher-name / profile-name is an opaque
 string passed through to Go for validation; the binding carries no
 ITB construction logic. The public surface is one `itb_pipeline`
-handle (init / load / save / rekey / free, Single Message encrypt /
+handle (init / init_keys / load / save / rekey / free, Single Message encrypt /
 decrypt, one-shot and whole-buffer stream pumps, incremental
 `itb_stream` sessions with write / end / read), an `itb_opts` query-string builder for init
 overrides, the profile-record entries (`itb_register` / `itb_lookup`
@@ -105,6 +105,8 @@ itb_opts_set(opts, "maxWorkers", "4");
 itb_pipeline_init("singlemsg-triple-mac-v1", opts, &sender);
 itb_opts_free(opts);
 ```
+
+`itb_pipeline_init_keys` constructs a `Pipeline` deterministically from eight caller-supplied master keys (one per seed slot `0..7`) via per-slot KDF, so two peers holding the same eight master keys derive identical `Pipeline` instances without exchanging a session blob. The eight master keys must come from independent entropy or key-agreement sources — never derive all eight keys from a single secret or a single KDF parent key.
 
 `itb_pipeline_rekey` rotates the parallax + wrapper masters
 mid-session (the eight ITB seeds and MAC key are fixed for the

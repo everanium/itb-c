@@ -138,6 +138,64 @@ itb_status itb_pipeline_init(const char *profile, const itb_opts *opts,
     return ITB_STATUS_OK;
 }
 
+struct init_keys_ctx {
+    const char *profile;
+    const char *opts;
+    const void *masters_flat;
+    size_t masters_flat_len;
+    const size_t *master_lens;
+    size_t masters_count;
+    uintptr_t handle;
+};
+
+static int init_keys_fn(void *ctx, void *out, size_t cap, size_t *out_len)
+{
+    struct init_keys_ctx *c = ctx;
+    c->handle = 0;
+    return ITB_Triple_InitKeys((char *)c->profile, (char *)c->opts,
+                               (void *)c->masters_flat, c->masters_flat_len,
+                               (size_t *)c->master_lens, c->masters_count,
+                               out, cap, out_len, &c->handle);
+}
+
+itb_status itb_pipeline_init_keys(const char *profile, const itb_opts *opts,
+                                  const void *masters_flat, size_t masters_flat_len,
+                                  const size_t *master_lens, size_t masters_count,
+                                  itb_pipeline **out)
+{
+    if (out == NULL) {
+        return ITB_STATUS_BAD_INPUT;
+    }
+    *out = NULL;
+    if (profile == NULL) {
+        return ITB_STATUS_BAD_INPUT;
+    }
+    itb_pipeline *pipe = calloc(1, sizeof(*pipe));
+    if (pipe == NULL) {
+        return ITB_STATUS_INTERNAL;
+    }
+    struct init_keys_ctx ctx = {
+        profile,
+        itb_internal_opts_cstr(opts),
+        masters_flat,
+        masters_flat_len,
+        master_lens,
+        masters_count,
+        0
+    };
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    itb_status st = buf_call(init_keys_fn, &ctx, ITB_BLOB_CAP, 0, &blob, &blob_len);
+    free(blob);
+    if (st != ITB_STATUS_OK) {
+        free(pipe);
+        return st;
+    }
+    pipe->handle = ctx.handle;
+    *out = pipe;
+    return ITB_STATUS_OK;
+}
+
 /* Shared tail of the two load entries: wraps a libitb3 handle. */
 static itb_status wrap_handle(int rc, uintptr_t handle, itb_pipeline **out)
 {

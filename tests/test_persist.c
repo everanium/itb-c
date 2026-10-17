@@ -297,6 +297,57 @@ static int run_mode(void)
     return 0;
 }
 
+static int run_init_keys(void)
+{
+    uint8_t flat[8 * 32];
+    size_t lens[8];
+    for (size_t i = 0; i < 8; i++) {
+        memset(flat + i * 32, (int)(0x11 * (i + 1)), 32);
+        lens[i] = 32;
+    }
+
+    itb_pipeline *p1 = NULL;
+    itb_pipeline *p2 = NULL;
+    TEST_OK(itb_pipeline_init_keys("singlemsg-triple-mac-v1", NULL,
+                                   flat, sizeof(flat), lens, 8, &p1), "init_keys 1");
+    TEST_OK(itb_pipeline_init_keys("singlemsg-triple-mac-v1", NULL,
+                                   flat, sizeof(flat), lens, 8, &p2), "init_keys 2");
+
+    uint8_t *b1 = NULL;
+    size_t b1_len = 0;
+    uint8_t *b2 = NULL;
+    size_t b2_len = 0;
+    TEST_OK(itb_pipeline_save(p1, &b1, &b1_len), "save init_keys 1");
+    TEST_OK(itb_pipeline_save(p2, &b2, &b2_len), "save init_keys 2");
+    TEST_ASSERT(b1_len == b2_len && memcmp(b1, b2, b1_len) == 0,
+                "init_keys blobs must match deterministically");
+    itb_bytes_free(b1);
+    itb_bytes_free(b2);
+
+    if (round_trip(p1, p2, "init_keys") != 0) {
+        return 1;
+    }
+    itb_pipeline_free(p1);
+    itb_pipeline_free(p2);
+
+    /* Duplicate master keys must fail with BAD_INPUT. */
+    memcpy(flat + 32, flat, 32);
+    itb_pipeline *bad = NULL;
+    itb_status st = itb_pipeline_init_keys("singlemsg-triple-mac-v1", NULL,
+                                           flat, sizeof(flat), lens, 8, &bad);
+    TEST_ASSERT(st == ITB_STATUS_BAD_INPUT, "duplicate master keys: got %d", (int)st);
+    TEST_ASSERT(bad == NULL, "out handle must stay NULL on failure");
+
+    /* Short 8-byte key must fail with BAD_INPUT. */
+    memset(flat + 32, 0x22, 32);
+    lens[0] = 8;
+    st = itb_pipeline_init_keys("singlemsg-triple-mac-v1", NULL,
+                                flat, sizeof(flat) - 24, lens, 8, &bad);
+    TEST_ASSERT(st == ITB_STATUS_BAD_INPUT, "short master key: got %d", (int)st);
+    TEST_ASSERT(bad == NULL, "out handle must stay NULL on failure");
+    return 0;
+}
+
 int main(void)
 {
     if (run() != 0) {
@@ -305,5 +356,8 @@ int main(void)
     if (run_drbg() != 0) {
         return 1;
     }
-    return run_mode();
+    if (run_mode() != 0) {
+        return 1;
+    }
+    return run_init_keys();
 }
