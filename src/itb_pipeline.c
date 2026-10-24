@@ -50,22 +50,29 @@ static itb_status buf_call(itb_buf_fn fn, void *ctx, size_t cap, size_t extra,
     size_t n = 0;
     int rc = fn(ctx, buf, cap, &n);
     if (rc == (int)ITB_STATUS_BUFFER_TOO_SMALL && n > cap) {
-        uint8_t *grown = realloc(buf, n + extra);
-        if (grown == NULL) {
-            free(buf);
+        itb_internal_wipe(buf, cap + extra);
+        free(buf);
+        buf = malloc(n + extra);
+        if (buf == NULL) {
             return ITB_STATUS_INTERNAL;
         }
-        buf = grown;
         cap = n;
         rc = fn(ctx, buf, cap, &n);
     }
     if (rc != (int)ITB_STATUS_OK) {
+        itb_internal_wipe(buf, cap + extra);
         free(buf);
         return itb_internal_status(rc);
     }
     if (n + extra < cap + extra) {
-        uint8_t *shrunk = realloc(buf, n + extra > 0 ? n + extra : 1);
+        size_t alloc_len = n + extra > 0 ? n + extra : 1;
+        uint8_t *shrunk = malloc(alloc_len);
         if (shrunk != NULL) {
+            if (n > 0) {
+                memcpy(shrunk, buf, n);
+            }
+            itb_internal_wipe(buf, cap + extra);
+            free(buf);
             buf = shrunk;
         }
     }
@@ -128,6 +135,7 @@ itb_status itb_pipeline_init(const char *profile, const itb_opts *opts,
     itb_status st = buf_call(init_fn, &ctx, ITB_BLOB_CAP, 0, &blob, &blob_len);
     /* The Init blob is not retained binding-side; itb_pipeline_save
      * reads the current bytes from libitb3. */
+    itb_internal_wipe(blob, blob_len);
     free(blob);
     if (st != ITB_STATUS_OK) {
         free(pipe);
@@ -186,6 +194,7 @@ itb_status itb_pipeline_init_keys(const char *profile, const itb_opts *opts,
     uint8_t *blob = NULL;
     size_t blob_len = 0;
     itb_status st = buf_call(init_keys_fn, &ctx, ITB_BLOB_CAP, 0, &blob, &blob_len);
+    itb_internal_wipe(blob, blob_len);
     free(blob);
     if (st != ITB_STATUS_OK) {
         free(pipe);
@@ -362,6 +371,7 @@ itb_status itb_pipeline_rekey(itb_pipeline *pipe,
         *blob_out = blob;
         *blob_len_out = blob_len;
     } else {
+        itb_internal_wipe(blob, blob_len);
         free(blob);
     }
     return ITB_STATUS_OK;

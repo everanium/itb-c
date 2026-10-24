@@ -53,4 +53,17 @@ itb_status itb_internal_status(int rc);
  * call. Never NULL — returns "" for NULL / empty builders. */
 const char *itb_internal_opts_cstr(const itb_opts *opts);
 
+/* Zeroes a buffer through a volatile byte pointer so the compiler
+ * cannot dead-store-eliminate the wipe before free(). */
+static inline void itb_internal_wipe(void *ptr, size_t len)
+{
+    if (ptr == NULL || len == 0) {
+        return;
+    }
+    volatile uint8_t *p = (volatile uint8_t *)ptr;
+    while (len--) {
+        *p++ = 0;
+    }
+}
+
 #endif /* ITB_INTERNAL_H */

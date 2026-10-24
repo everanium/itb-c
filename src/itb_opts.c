@@ -74,6 +74,7 @@ void itb_opts_free(itb_opts *opts)
     if (opts == NULL) {
         return;
     }
+    itb_internal_wipe(opts->buf, opts->len);
     free(opts->buf);
     opts->buf = NULL;
     free(opts);
@@ -99,10 +100,13 @@ itb_status itb_opts_set(itb_opts *opts, const char *key, const char *value)
             }
             cap *= 2;
         }
-        char *grown = realloc(opts->buf, cap);
+        char *grown = malloc(cap);
         if (grown == NULL) {
             return ITB_STATUS_INTERNAL;
         }
+        memcpy(grown, opts->buf, opts->len + 1);
+        itb_internal_wipe(opts->buf, opts->len);
+        free(opts->buf);
         opts->buf = grown;
         opts->cap = cap;
     }
