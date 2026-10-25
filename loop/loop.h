@@ -84,6 +84,7 @@ struct config {
     int64_t chunk_size;       /* 0 = profile default */
     int barrier_fill;         /* 0 = profile default */
     const char *drbg;         /* DRBG fill primitive; "" = profile default (auto tier) */
+    const char *interlock;    /* Interlocked Barrier chunk width: 48 | 168; "" = profile default */
     int gomaxprocs;           /* 0 = inherit from the environment */
     int64_t rekey_every;      /* per-worker iterations between rotations; 0 = never */
     int64_t blob_cycle_every; /* per-worker iterations between reopens; 0 = never */

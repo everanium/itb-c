@@ -291,6 +291,8 @@ int final_summary(struct run_state *r, int64_t elapsed_ns)
         printf(",\"drbg_auto_tier\":");
         const char *auto_tier = itb_drbg_auto_tier();
         json_string(auto_tier != NULL ? auto_tier : "");
+        printf(",\"interlock\":");
+        json_string(cfg->interlock);
         printf(",\"chunk_size_bytes\":%lld", (long long)cfg->chunk_size);
         printf(",\"barrier_fill\":%d", cfg->barrier_fill);
         printf(",\"parallax\":\"%s\"", on_off(cfg->parallax));

@@ -297,6 +297,76 @@ static int run_mode(void)
     return 0;
 }
 
+static int run_interlock(void)
+{
+    itb_opts *opts = itb_opts_new();
+    TEST_ASSERT(opts != NULL, "opts alloc");
+    TEST_OK(itb_opts_set(opts, "interlock", "168"), "set interlock 168");
+    itb_pipeline *sender = NULL;
+    itb_status st = itb_pipeline_init("singlemsg-triple-mac-v1", opts, &sender);
+    TEST_OK(st, "init interlock 168");
+    itb_opts_free(opts);
+
+    itb_pipeline *receiver = NULL;
+    st = test_load_from(sender, &receiver);
+    TEST_OK(st, "load interlock 168");
+    if (round_trip(sender, receiver, "interlock-168") != 0) {
+        return 1;
+    }
+    if (round_trip(receiver, sender, "interlock-168-back") != 0) {
+        return 1;
+    }
+
+    uint8_t *blob = NULL;
+    size_t blob_len = 0;
+    st = itb_pipeline_save(sender, &blob, &blob_len);
+    TEST_OK(st, "save interlock 168");
+    char *inspected = NULL;
+    st = itb_inspect(blob, blob_len, &inspected);
+    TEST_OK(st, "inspect interlock 168");
+    TEST_ASSERT(strstr(inspected, "\"interlock\":\"168\"") != NULL,
+                "inspect must carry interlock 168: %s", inspected);
+    itb_string_free(inspected);
+    itb_bytes_free(blob);
+    itb_pipeline_free(receiver);
+    itb_pipeline_free(sender);
+
+    /* Default omits interlock from inspect and lookup. */
+    itb_pipeline *plain = NULL;
+    st = itb_pipeline_init("singlemsg-triple-mac-v1", NULL, &plain);
+    TEST_OK(st, "init default");
+    st = itb_pipeline_save(plain, &blob, &blob_len);
+    TEST_OK(st, "save default");
+    st = itb_inspect(blob, blob_len, &inspected);
+    TEST_OK(st, "inspect default");
+    TEST_ASSERT(strstr(inspected, "\"interlock\"") == NULL,
+                "default inspect must omit interlock: %s", inspected);
+    itb_string_free(inspected);
+    itb_bytes_free(blob);
+    itb_pipeline_free(plain);
+
+    /* 256-bit hash with interlock=168 must fail with BAD_INPUT. */
+    opts = itb_opts_new();
+    TEST_ASSERT(opts != NULL, "opts alloc");
+    TEST_OK(itb_opts_set(opts, "innerHash", "blake3"), "set innerHash blake3");
+    TEST_OK(itb_opts_set(opts, "interlock", "168"), "set interlock 168");
+    itb_pipeline *bad = NULL;
+    st = itb_pipeline_init("singlemsg-triple-mac-v1", opts, &bad);
+    itb_opts_free(opts);
+    TEST_ASSERT(st == ITB_STATUS_BAD_INPUT, "256-bit interlock 168: got %d", (int)st);
+    TEST_ASSERT(bad == NULL, "out handle must stay NULL on failure");
+
+    /* Invalid interlock=96 must fail with BAD_INPUT. */
+    opts = itb_opts_new();
+    TEST_ASSERT(opts != NULL, "opts alloc");
+    TEST_OK(itb_opts_set(opts, "interlock", "96"), "set interlock 96");
+    st = itb_pipeline_init("singlemsg-triple-mac-v1", opts, &bad);
+    itb_opts_free(opts);
+    TEST_ASSERT(st == ITB_STATUS_BAD_INPUT, "interlock 96: got %d", (int)st);
+    TEST_ASSERT(bad == NULL, "out handle must stay NULL on failure");
+    return 0;
+}
+
 static int run_init_keys(void)
 {
     uint8_t flat[8 * 32];
@@ -357,6 +427,9 @@ int main(void)
         return 1;
     }
     if (run_mode() != 0) {
+        return 1;
+    }
+    if (run_interlock() != 0) {
         return 1;
     }
     return run_init_keys();

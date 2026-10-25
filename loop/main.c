@@ -119,6 +119,7 @@ struct raw_flags {
     int gomaxprocs;
     int goroutines;
     const char *hash;
+    const char *interlock;
     int64_t iterations;
     bool json_output;
     int key_bits;
@@ -139,8 +140,8 @@ struct raw_flags {
 /* The flag table, in alphabetical order (the order the usage prints). */
 static struct flag *flag_table(struct raw_flags *f, size_t *count)
 {
-    static struct flag table[25];
-    static const struct flag proto[25] = {
+    static struct flag table[26];
+    static const struct flag proto[26] = {
         { "barrier-fill", "int", FLAG_INT, NULL,
           "DRBG barrier fill margin: 1 | 2 | 4 | 8 | 16 | 32; 0 = profile default (1)" },
         { "blob-cycle-every", "int", FLAG_INT64, NULL,
@@ -161,6 +162,8 @@ static struct flag *flag_table(struct raw_flags *f, size_t *count)
           "concurrent workers (1..10); on runtimes without parallelism values above 1 are clamped to 1" },
         { "hash", "string", FLAG_STRING, NULL,
           "inner ITB hash primitive name" },
+        { "interlock", "string", FLAG_STRING, NULL,
+          "Interlocked Barrier chunk width: 48 | 168; empty = profile default (48; 168 requires 512-bit hash)" },
         { "iterations", "int", FLAG_INT64, NULL,
           "fixed per-worker iteration count; 0 = duration-based" },
         { "json-output", "", FLAG_BOOL, NULL,
@@ -192,18 +195,18 @@ static struct flag *flag_table(struct raw_flags *f, size_t *count)
         { "wrapper", "string", FLAG_STRING, NULL,
           "wrapper layer: on | off" },
     };
-    void *dsts[25] = {
+    void *dsts[26] = {
         &f->barrier_fill, &f->blob_cycle_every, &f->blob_mode, &f->chunk_size, &f->drbg, &f->duration,
-        &f->gogc, &f->gomaxprocs, &f->goroutines, &f->hash, &f->iterations,
+        &f->gogc, &f->gomaxprocs, &f->goroutines, &f->hash, &f->interlock, &f->iterations,
         &f->json_output, &f->key_bits, &f->mac, &f->memlimit, &f->memprofile,
         &f->nonce_bits, &f->parallax, &f->payload_mode, &f->payload_size,
         &f->profile, &f->rekey_every, &f->seed, &f->shape, &f->wrapper,
     };
-    for (size_t i = 0; i < 25; i++) {
+    for (size_t i = 0; i < 26; i++) {
         table[i] = proto[i];
         table[i].dst = dsts[i];
     }
-    *count = 25;
+    *count = 26;
     return table;
 }
 
@@ -477,7 +480,7 @@ static int parse_flags(int argc, char **argv, struct config *cfg)
     struct raw_flags f = {
         .barrier_fill = 0, .blob_cycle_every = 0, .blob_mode = 1, .chunk_size = "0",
         .drbg = "", .duration = "5m", .gogc = 0, .gomaxprocs = 0, .goroutines = 3,
-        .hash = "areion512", .iterations = 0, .json_output = false,
+        .hash = "areion512", .interlock = "", .iterations = 0, .json_output = false,
         .key_bits = 0, .mac = "hmac-blake3", .memlimit = "auto",
         .memprofile = "", .nonce_bits = 0, .parallax = "on",
         .payload_mode = "fixed", .payload_size = "16MB", .profile = "",
@@ -587,6 +590,13 @@ static int parse_flags(int argc, char **argv, struct config *cfg)
         return -1;
     }
     cfg->drbg = f.drbg; /* validated by Init: the C ABI enumerates no DRBG names */
+    cfg->interlock = f.interlock;
+    if (strcmp(cfg->interlock, "") != 0 && strcmp(cfg->interlock, "48") != 0 &&
+        strcmp(cfg->interlock, "168") != 0) {
+        fprintf(stderr, "loop: --interlock must be 48 | 168 (or empty = profile default), got \"%s\"\n",
+                cfg->interlock);
+        return -1;
+    }
     if (parse_size(f.chunk_size, &cfg->chunk_size) != 0) {
         fprintf(stderr, "loop: --chunk-size: invalid size \"%s\"\n", f.chunk_size);
         return -1;
@@ -702,9 +712,11 @@ static void log_pipeline_initialised(const char *profile, const uint8_t *blob, s
     char hash[64];
     char mac[64];
     char drbg[64];
+    char interlock[64];
     record_str(json, "hash", hash, sizeof(hash));
     record_str(json, "mac", mac, sizeof(mac));
     record_str(json, "drbg", drbg, sizeof(drbg));
+    record_str(json, "interlock", interlock, sizeof(interlock));
     long long container_mode = record_int(json, "container_mode");
     char line[1024];
     int n = snprintf(line, sizeof(line),
@@ -717,6 +729,9 @@ static void log_pipeline_initialised(const char *profile, const uint8_t *blob, s
     }
     if (n > 0 && (size_t)n < sizeof(line) && strcmp(drbg, "-") != 0) {
         n += snprintf(line + n, sizeof(line) - (size_t)n, " drbg=%s", drbg);
+    }
+    if (n > 0 && (size_t)n < sizeof(line) && strcmp(interlock, "-") != 0) {
+        n += snprintf(line + n, sizeof(line) - (size_t)n, " interlock=%s", interlock);
     }
     log_line("%s", line);
     itb_string_free(json);
@@ -750,6 +765,7 @@ static int build_pipeline(const struct config *cfg, const char *profile,
     (void)snprintf(num, sizeof(num), "%d", cfg->barrier_fill);
     (void)itb_opts_set(opts, "barrierFill", num);
     (void)itb_opts_set(opts, "drbg", cfg->drbg);
+    (void)itb_opts_set(opts, "interlock", cfg->interlock);
     (void)snprintf(num, sizeof(num), "%lld", (long long)cfg->chunk_size);
     (void)itb_opts_set(opts, "chunkSize", num);
     if (cfg->profile != NULL && cfg->profile[0] != '\0') {
@@ -845,6 +861,9 @@ static int run(int argc, char **argv)
         }
         if (n > 0 && (size_t)n < sizeof(overrides) && cfg->drbg[0] != '\0') {
             n += snprintf(overrides + n, sizeof(overrides) - (size_t)n, " drbg=%s", cfg->drbg);
+        }
+        if (n > 0 && (size_t)n < sizeof(overrides) && cfg->interlock[0] != '\0') {
+            n += snprintf(overrides + n, sizeof(overrides) - (size_t)n, " interlock=%s", cfg->interlock);
         }
         log_line("%s", overrides);
     }
