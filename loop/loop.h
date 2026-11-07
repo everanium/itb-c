@@ -80,7 +80,7 @@ struct config {
     const char *profile;      /* empty = shape-based profile pair */
     int key_bits;             /* 0 = profile default */
     int nonce_bits;           /* 0 = profile default */
-    int blob_mode;            /* container floor sizing mode: 1 (per-region, default) | 2 (per-container) */
+    int blob_mode;            /* container floor sizing mode: 1 (per-region, default) | 2 (per-container) | 3 (gauss-posit) */
     int64_t chunk_size;       /* 0 = profile default */
     int barrier_fill;         /* 0 = profile default */
     const char *drbg;         /* DRBG fill primitive; "" = profile default (auto tier) */

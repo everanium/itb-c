@@ -294,6 +294,27 @@ static int run_mode(void)
     itb_string_free(inspected);
     itb_bytes_free(blob);
     itb_pipeline_free(pipe);
+
+    opts = itb_opts_new();
+    TEST_ASSERT(opts != NULL, "opts alloc");
+    TEST_OK(itb_opts_set(opts, "mode", "3"), "set mode 3");
+    pipe = NULL;
+    st = itb_pipeline_init("singlemsg-triple-mac-v1", opts, &pipe);
+    TEST_OK(st, "init mode 3");
+    itb_opts_free(opts);
+
+    blob = NULL;
+    blob_len = 0;
+    st = itb_pipeline_save(pipe, &blob, &blob_len);
+    TEST_OK(st, "save mode 3");
+    inspected = NULL;
+    st = itb_inspect(blob, blob_len, &inspected);
+    TEST_OK(st, "inspect mode 3");
+    TEST_ASSERT(strstr(inspected, "\"container_mode\":3") != NULL,
+                "inspect mode 3 must report container_mode 3: %s", inspected);
+    itb_string_free(inspected);
+    itb_bytes_free(blob);
+    itb_pipeline_free(pipe);
     return 0;
 }
 

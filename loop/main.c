@@ -147,7 +147,7 @@ static struct flag *flag_table(struct raw_flags *f, size_t *count)
         { "blob-cycle-every", "int", FLAG_INT64, NULL,
           "reopen each pipeline from its session blob every N iterations per worker; 0 = never" },
         { "blob-mode", "int", FLAG_INT, NULL,
-          "container floor sizing mode: 1 (per-region, default) | 2 (per-container)" },
+          "container floor sizing mode: 1 (per-region, default) | 2 (per-container) | 3 (gauss-posit)" },
         { "chunk-size", "string", FLAG_STRING, NULL,
           "streaming chunk-size budget (e.g. 4MB); 0 = profile default; inert for pure message shape" },
         { "drbg", "string", FLAG_STRING, NULL,
@@ -575,10 +575,10 @@ static int parse_flags(int argc, char **argv, struct config *cfg)
     }
     cfg->blob_mode = f.blob_mode;
     switch (cfg->blob_mode) {
-    case 1: case 2:
+    case 1: case 2: case 3:
         break;
     default:
-        fprintf(stderr, "loop: --blob-mode must be 1 (per-region) | 2 (per-container), got %d\n", cfg->blob_mode);
+        fprintf(stderr, "loop: --blob-mode must be 1 (per-region) | 2 (per-container) | 3 (gauss-posit), got %d\n", cfg->blob_mode);
         return -1;
     }
     cfg->barrier_fill = f.barrier_fill;
@@ -724,7 +724,7 @@ static void log_pipeline_initialised(const char *profile, const uint8_t *blob, s
                      profile, blob_len, hash, record_int(json, "keybits"), record_int(json, "nonce_bits"),
                      record_int(json, "barrier_fill"), record_int(json, "chunk"), mac,
                      on_off(record_bool(json, "parallax") != 0), on_off(record_bool(json, "wrapper") != 0));
-    if (n > 0 && (size_t)n < sizeof(line) && container_mode == 2) {
+    if (n > 0 && (size_t)n < sizeof(line) && (container_mode == 2 || container_mode == 3)) {
         n += snprintf(line + n, sizeof(line) - (size_t)n, " container-mode=%lld", container_mode);
     }
     if (n > 0 && (size_t)n < sizeof(line) && strcmp(drbg, "-") != 0) {
